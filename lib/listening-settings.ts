@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const LISTENING_SETTINGS_KEY = "sukur-gunlugu.listening.v1";
+export const DEFAULT_AMBIENCE_URI = "bundled:gentle-stream-loop";
+export const DEFAULT_AMBIENCE_NAME = "Yumuşak Akış (varsayılan)";
 
 export type ListeningSettings = {
   rate: number;
@@ -14,8 +16,8 @@ export type ListeningSettings = {
 export const DEFAULT_LISTENING_SETTINGS: ListeningSettings = {
   rate: 1.2,
   gapSeconds: 2,
-  ambienceUri: null,
-  ambienceName: null,
+  ambienceUri: DEFAULT_AMBIENCE_URI,
+  ambienceName: DEFAULT_AMBIENCE_NAME,
   ambienceVolume: 35,
   backgroundPlayback: true,
 };
@@ -24,8 +26,8 @@ export function normalizeListeningSettings(parsed: Partial<ListeningSettings>): 
   return {
     rate: typeof parsed.rate === "number" ? Math.min(2, Math.max(0.5, parsed.rate)) : DEFAULT_LISTENING_SETTINGS.rate,
     gapSeconds: typeof parsed.gapSeconds === "number" ? Math.min(30, Math.max(0, parsed.gapSeconds)) : DEFAULT_LISTENING_SETTINGS.gapSeconds,
-    ambienceUri: typeof parsed.ambienceUri === "string" ? parsed.ambienceUri : null,
-    ambienceName: typeof parsed.ambienceName === "string" ? parsed.ambienceName : null,
+    ambienceUri: typeof parsed.ambienceUri === "string" ? parsed.ambienceUri : DEFAULT_AMBIENCE_URI,
+    ambienceName: typeof parsed.ambienceName === "string" ? parsed.ambienceName : DEFAULT_AMBIENCE_NAME,
     ambienceVolume: typeof parsed.ambienceVolume === "number" ? Math.min(100, Math.max(0, parsed.ambienceVolume)) : DEFAULT_LISTENING_SETTINGS.ambienceVolume,
     backgroundPlayback: typeof parsed.backgroundPlayback === "boolean" ? parsed.backgroundPlayback : DEFAULT_LISTENING_SETTINGS.backgroundPlayback,
   };

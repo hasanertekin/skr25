@@ -3,7 +3,7 @@ import * as Speech from "expo-speech";
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-audio";
 import { AppState } from "react-native";
 
-import { DEFAULT_LISTENING_SETTINGS, loadListeningSettings, type ListeningSettings } from "@/lib/listening-settings";
+import { DEFAULT_AMBIENCE_URI, DEFAULT_LISTENING_SETTINGS, loadListeningSettings, type ListeningSettings } from "@/lib/listening-settings";
 import type { GratitudeEntry } from "@/lib/gratitude";
 
 type PlayerContextValue = {
@@ -50,7 +50,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     settingsRef.current = settings;
     setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: settings.backgroundPlayback }).catch(() => undefined);
-    if (ambienceUriRef.current !== settings.ambienceUri) { ambienceRef.current?.remove(); ambienceRef.current = null; ambienceUriRef.current = settings.ambienceUri; }
+    if (ambienceUriRef.current !== settings.ambienceUri) { ambienceRef.current?.pause(); ambienceRef.current?.remove(); ambienceRef.current = null; ambienceUriRef.current = settings.ambienceUri; }
     if (ambienceRef.current) ambienceRef.current.volume = settings.ambienceVolume / 100;
   }, [settings]);
 
@@ -70,8 +70,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const ensureAmbience = useCallback(() => {
     const uri = activeAmbienceRef.current === undefined ? settingsRef.current.ambienceUri : activeAmbienceRef.current; if (!uri) return null;
-    if (ambienceUriRef.current !== uri) { ambienceRef.current?.remove(); ambienceRef.current = null; ambienceUriRef.current = uri; }
-    if (!ambienceRef.current) { ambienceRef.current = createAudioPlayer(uri); ambienceRef.current.loop = true; ambienceRef.current.volume = settingsRef.current.ambienceVolume / 100; }
+    if (ambienceUriRef.current !== uri) { ambienceRef.current?.pause(); ambienceRef.current?.remove(); ambienceRef.current = null; ambienceUriRef.current = uri; }
+    if (!ambienceRef.current) {
+      const source = uri === DEFAULT_AMBIENCE_URI ? require("@/assets/audio/gentle-stream-loop.mp3") : uri;
+      ambienceRef.current = createAudioPlayer(source);
+      ambienceRef.current.loop = true;
+      ambienceRef.current.volume = settingsRef.current.ambienceVolume / 100;
+    }
     return ambienceRef.current;
   }, []);
 
@@ -87,7 +92,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
   }, [clearPlaybackNotification, ensureAmbience, fadeAmbience, stopAmbience, updatePlaybackNotification]);
 
-  const playEntries = useCallback((nextEntries: GratitudeEntry[], startIndex = 0, ambienceUri?: string | null) => { Speech.stop(); playbackTokenRef.current += 1; activeAmbienceRef.current = ambienceUri; if (gapTimerRef.current) clearTimeout(gapTimerRef.current); setEntries(nextEntries); entriesRef.current = nextEntries; setIsVisible(nextEntries.length > 0); if (nextEntries.length) speakAt(Math.max(0, Math.min(startIndex, nextEntries.length - 1))); }, [speakAt]);
+  const playEntries = useCallback((nextEntries: GratitudeEntry[], startIndex = 0, ambienceUri?: string | null) => { Speech.stop(); playbackTokenRef.current += 1; if (gapTimerRef.current) clearTimeout(gapTimerRef.current); stopAmbience(); activeAmbienceRef.current = ambienceUri; setEntries(nextEntries); entriesRef.current = nextEntries; setIsVisible(nextEntries.length > 0); if (nextEntries.length) speakAt(Math.max(0, Math.min(startIndex, nextEntries.length - 1))); }, [speakAt, stopAmbience]);
 
   const toggle = useCallback(() => { if (isPlaying) { Speech.stop(); playbackTokenRef.current += 1; if (gapTimerRef.current) clearTimeout(gapTimerRef.current); setIsPlaying(false); stopAmbience(); clearPlaybackNotification(); } else if (entriesRef.current.length) speakAt(currentIndex); }, [clearPlaybackNotification, currentIndex, isPlaying, speakAt, stopAmbience]);
 

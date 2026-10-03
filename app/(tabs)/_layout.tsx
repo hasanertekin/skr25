@@ -4,10 +4,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HapticTab } from "@/components/haptic-tab";
 import { Ionicons } from "@expo/vector-icons";
 import { Platform } from "react-native";
-import { ritual } from "@/lib/design-system";
+import { useThemeContext } from "@/lib/theme-provider";
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const { palette } = useThemeContext();
   const bottomPadding = Platform.OS === "web" ? 12 : Math.max(insets.bottom, 8);
   const tabBarHeight = 56 + bottomPadding;
 
@@ -15,16 +16,16 @@ export default function TabLayout() {
     <Tabs
       initialRouteName="index"
       screenOptions={{
-        tabBarActiveTintColor: ritual.green,
-        tabBarInactiveTintColor: "#809087",
+        tabBarActiveTintColor: palette.primary,
+        tabBarInactiveTintColor: palette.muted,
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
           paddingTop: 8,
           paddingBottom: bottomPadding,
           height: tabBarHeight,
-          backgroundColor: ritual.ivory,
-          borderTopColor: ritual.line,
+          backgroundColor: palette.surface,
+          borderTopColor: palette.border,
           borderTopWidth: 0.5,
         },
       }}

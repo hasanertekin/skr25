@@ -11,7 +11,7 @@ import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as LocalAuthentication from "expo-local-authentication";
 import "@/lib/_core/nativewind-pressable";
-import { ThemeProvider } from "@/lib/theme-provider";
+import { ThemeProvider, useThemeContext } from "@/lib/theme-provider";
 import {
   SafeAreaFrameContext,
   SafeAreaInsetsContext,
@@ -37,6 +37,7 @@ export const unstable_settings = {
 function PrivacyGuard({ children }: { children: React.ReactNode }) {
   const [locked, setLocked] = useState(false);
   const [checking, setChecking] = useState(false);
+  const { palette } = useThemeContext();
   const authenticate = useCallback(async () => {
     setChecking(true);
     const preferences = await loadPreferences();
@@ -45,7 +46,7 @@ function PrivacyGuard({ children }: { children: React.ReactNode }) {
     setLocked(!result.success); setChecking(false);
   }, []);
   useEffect(() => { authenticate(); }, [authenticate]);
-  return <View style={{ flex: 1 }}>{children}{locked ? <View style={{ alignItems: "center", backgroundColor: "#F8F6F0", bottom: 0, justifyContent: "center", left: 0, position: "absolute", right: 0, top: 0 }}><Ionicons name="lock-closed" size={40} color="#2F7D5A" /><Text style={{ color: "#163B2B", fontSize: 20, fontWeight: "800", marginTop: 14 }}>Günlük kilitli</Text><Text style={{ color: "#7B8A82", fontSize: 12, marginTop: 5 }}>Devam etmek için cihaz kilidini doğrula.</Text><Pressable disabled={checking} onPress={authenticate} style={{ backgroundColor: "#2F7D5A", borderRadius: 13, marginTop: 20, paddingHorizontal: 18, paddingVertical: 12 }}><Text style={{ color: "#FFFFFF", fontWeight: "800" }}>{checking ? "Kontrol ediliyor" : "Yeniden dene"}</Text></Pressable></View> : null}</View>;
+  return <View style={{ flex: 1 }}>{children}{locked ? <View style={{ alignItems: "center", backgroundColor: palette.background, bottom: 0, justifyContent: "center", left: 0, position: "absolute", right: 0, top: 0 }}><Ionicons name="lock-closed" size={40} color={palette.primary} /><Text style={{ color: palette.foreground, fontSize: 20, fontWeight: "800", marginTop: 14 }}>Günlük kilitli</Text><Text style={{ color: palette.muted, fontSize: 12, marginTop: 5 }}>Devam etmek için cihaz kilidini doğrula.</Text><Pressable disabled={checking} onPress={authenticate} style={{ backgroundColor: palette.primary, borderRadius: 13, marginTop: 20, paddingHorizontal: 18, paddingVertical: 12 }}><Text style={{ color: palette.surface, fontWeight: "800" }}>{checking ? "Kontrol ediliyor" : "Yeniden dene"}</Text></Pressable></View> : null}</View>;
 }
 
 export default function RootLayout() {

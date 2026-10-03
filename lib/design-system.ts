@@ -13,12 +13,3 @@ export const ritual = {
   white: "#FFFFFF",
   night: "#10201D",
 } as const;
-
-export const ritualFonts = {
-  body: "Manrope_400Regular",
-  bodyMedium: "Manrope_500Medium",
-  bodySemi: "Manrope_600SemiBold",
-  bodyBold: "Manrope_700Bold",
-  display: "PlayfairDisplay_600SemiBold",
-  displayItalic: "PlayfairDisplay_500Medium_Italic",
-} as const;

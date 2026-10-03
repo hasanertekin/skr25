@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Appearance, StyleSheet, View } from "react-native";
+import { Appearance, View } from "react-native";
 import { colorScheme as nativewindColorScheme, vars } from "nativewind";
 import { loadPreferences } from "@/lib/app-preferences";
 import { SchemeColors, type ColorScheme } from "@/constants/theme";
 
-type ThemeContextValue = { colorScheme: ColorScheme; themeName: string; setColorScheme: (scheme: ColorScheme) => void; setThemeName: (name: string) => void };
+export type ThemePalette = Record<string, string>;
+type ThemeContextValue = { colorScheme: ColorScheme; themeName: string; palette: ThemePalette; setColorScheme: (scheme: ColorScheme) => void; setThemeName: (name: string) => void };
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 const themePalettes: Record<string, Record<string, string>> = {
   "Zümrüt Bahçe": { primary: "#2F7D5A", background: "#F8F6F0", surface: "#FFFFFF", foreground: "#163B2B", muted: "#7B8A82", border: "#E1E8E2", success: "#4E9B72", warning: "#E9A55E", error: "#C75C51" },
@@ -27,7 +28,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const palette = paletteFor(themeName, colorScheme);
   useEffect(() => { nativewindColorScheme.set(colorScheme); if (typeof document !== "undefined") { const root = document.documentElement; root.dataset.theme = themeName; root.classList.toggle("dark", colorScheme === "dark"); Object.entries(palette).forEach(([token, value]) => root.style.setProperty(`--color-${token}`, value)); } }, [colorScheme, palette, themeName]);
   const themeVariables = useMemo(() => vars(Object.fromEntries(Object.entries(palette).map(([key, value]) => [`color-${key}`, value]))), [palette]);
-  const value = useMemo(() => ({ colorScheme, themeName, setColorScheme, setThemeName }), [colorScheme, themeName, setColorScheme, setThemeName]);
-  return <ThemeContext.Provider value={value}><View style={[{ flex: 1, backgroundColor: palette.background }, themeVariables]}>{children}<View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { backgroundColor: palette.primary, opacity: 0.075 }]} /></View></ThemeContext.Provider>;
+  const value = useMemo(() => ({ colorScheme, themeName, palette, setColorScheme, setThemeName }), [colorScheme, themeName, palette, setColorScheme, setThemeName]);
+  return <ThemeContext.Provider value={value}><View style={[{ flex: 1, backgroundColor: palette.background }, themeVariables]}>{children}</View></ThemeContext.Provider>;
 }
 export function useThemeContext(): ThemeContextValue { const ctx = useContext(ThemeContext); if (!ctx) throw new Error("useThemeContext must be used within ThemeProvider"); return ctx; }

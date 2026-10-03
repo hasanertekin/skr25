@@ -97,7 +97,7 @@ export default function HomeScreen() {
   useEffect(() => { if (!isPlaying || playingEntries.length === 0) return; const activeId = playingEntries[currentIndex]?.id; const activeIndex = todayEntries.findIndex((entry) => entry.id === activeId); if (activeIndex >= 0) listRef.current?.scrollToIndex({ index: activeIndex, animated: true, viewPosition: 0.5 }); }, [currentIndex, isPlaying, playingEntries, todayEntries]);
 
   return (
-    <ScreenContainer containerClassName="bg-[#F8F6F0]" safeAreaClassName="bg-[#F8F6F0]">
+    <ScreenContainer>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         <FlatList
           ref={listRef}
@@ -196,7 +196,7 @@ export default function HomeScreen() {
                   <Text style={styles.entryMetaText}>{formatEntryTime(new Date(item.createdAt))}</Text>
                 </View>
               </View>
-              <Pressable onPress={() => playEntries(todayEntries, index)} style={styles.numberPlay} accessibilityLabel="Bu kayıttan oynat"><Ionicons name="play" size={11} color={colors.primary} /></Pressable>
+              <Pressable onPress={() => playEntries(todayEntries, index)} style={styles.numberPlay} accessibilityLabel="Bu kayıttan oynat"><Ionicons name="play" size={20} color={colors.primary} /></Pressable>
               <Pressable onPress={() => openPlaylistPicker(item)} accessibilityLabel="Playlist’e ekle"><Ionicons name={playlists.some((playlist) => playlist.entryIds.includes(item.id)) ? "star" : "star-outline"} size={20} color={playlists.some((playlist) => playlist.entryIds.includes(item.id)) ? colors.orange : colors.muted} /></Pressable>
             </View>
           )}
@@ -279,7 +279,7 @@ const styles = StyleSheet.create({
   entryNumberText: { color: colors.muted, fontSize: 11, fontWeight: "800" },
   entryNumberTextHighlight: { color: colors.primary },
   entryCopy: { flex: 1, marginRight: 10 },
-  entryText: { color: colors.ink, fontFamily: "PlayfairDisplay", fontSize: 15, fontWeight: "400", lineHeight: 27 },
+  entryText: { color: colors.ink, fontFamily: "OpenSans", fontSize: 15, fontWeight: "400", lineHeight: 27 },
   entryMeta: { alignItems: "center", flexDirection: "row", gap: 4, marginTop: 9 },
   entryMetaText: { color: colors.muted, fontFamily: "OpenSans", fontSize: 11 },
   numberPlay: { alignItems: "center", justifyContent: "center", marginLeft: 3, marginTop: 3, width: 28 },
