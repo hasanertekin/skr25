@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Speech from "expo-speech";
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-audio";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
+import * as Notifications from "expo-notifications";
 
 import { DEFAULT_AMBIENCE_URI, DEFAULT_LISTENING_SETTINGS, loadListeningSettings, type ListeningSettings } from "@/lib/listening-settings";
+import { configureNotifications, MEDIA_ACTION_NEXT, MEDIA_ACTION_PREVIOUS, MEDIA_ACTION_STOP, MEDIA_ACTION_TOGGLE, MEDIA_NOTIFICATION_CATEGORY, MEDIA_NOTIFICATION_CHANNEL } from "@/lib/reminders";
 import type { GratitudeEntry } from "@/lib/gratitude";
 
 type PlayerContextValue = {
@@ -37,12 +39,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playbackTokenRef = useRef(0);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeAmbienceRef = useRef<string | null | undefined>(undefined);
+  const mediaNotificationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     loadListeningSettings().then((loaded) => { setSettingsState(loaded); settingsRef.current = loaded; });
     setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true }).catch(() => undefined);
     const subscription = AppState.addEventListener("change", (state) => { if (state === "background" && !settingsRef.current.backgroundPlayback) { Speech.stop(); setIsPlaying(false); stopAmbience(); } });
-    return () => { subscription.remove(); Speech.stop(); if (gapTimerRef.current) clearTimeout(gapTimerRef.current); ambienceRef.current?.remove(); };
+    return () => { subscription.remove(); Speech.stop(); if (gapTimerRef.current) clearTimeout(gapTimerRef.current); if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current); ambienceRef.current?.remove(); if (mediaNotificationIdRef.current) Notifications.dismissNotificationAsync(mediaNotificationIdRef.current).catch(() => undefined); };
   }, []);
 
   useEffect(() => { entriesRef.current = entries; }, [entries]);
@@ -64,9 +67,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const stopAmbience = useCallback(() => { if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current); fadeTimerRef.current = null; if (!ambienceRef.current) return; ambienceRef.current.pause(); ambienceRef.current.seekTo(0); ambienceRef.current.volume = 0; }, []);
 
-  const updatePlaybackNotification = useCallback(async (_item: GratitudeEntry) => { return; }, []);
+  const updatePlaybackNotification = useCallback(async (item: GratitudeEntry) => {
+    if (Platform.OS === "web") return;
+    await configureNotifications();
+    if (mediaNotificationIdRef.current) await Notifications.dismissNotificationAsync(mediaNotificationIdRef.current).catch(() => undefined);
+    mediaNotificationIdRef.current = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "Şükür Günlüğü",
+        body: item.text,
+        data: { kind: "gratitude-media", entryId: item.id },
+        categoryIdentifier: MEDIA_NOTIFICATION_CATEGORY,
+        ...(Platform.OS === "android" ? { channelId: MEDIA_NOTIFICATION_CHANNEL, sticky: true, autoDismiss: false } : {}),
+      },
+      trigger: null,
+    });
+  }, []);
 
-  const clearPlaybackNotification = useCallback(() => undefined, []);
+  const clearPlaybackNotification = useCallback(() => {
+    if (!mediaNotificationIdRef.current) return;
+    const id = mediaNotificationIdRef.current;
+    mediaNotificationIdRef.current = null;
+    Notifications.dismissNotificationAsync(id).catch(() => undefined);
+  }, []);
 
   const ensureAmbience = useCallback(() => {
     const uri = activeAmbienceRef.current === undefined ? settingsRef.current.ambienceUri : activeAmbienceRef.current; if (!uri) return null;
@@ -83,7 +105,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const speakAt = useCallback((index: number) => {
     const token = playbackTokenRef.current; const item = entriesRef.current[index];
     if (!item) { setIsPlaying(false); stopAmbience(); clearPlaybackNotification(); return; }
-    setCurrentIndex(index); setIsPlaying(true); setIsVisible(true); updatePlaybackNotification(item);
+    setCurrentIndex(index); setIsPlaying(true); setIsVisible(true); void updatePlaybackNotification(item);
     const ambience = ensureAmbience(); if (ambience) { ambience.play(); fadeAmbience(settingsRef.current.ambienceVolume / 100); } else { stopAmbience(); }
     Speech.speak(item.text, { language: "tr-TR", rate: settingsRef.current.rate, pitch: 1,
       onDone: () => { if (token !== playbackTokenRef.current) return; fadeAmbience(1); const advance = () => { if (token !== playbackTokenRef.current) return; if (index + 1 < entriesRef.current.length) { fadeAmbience(settingsRef.current.ambienceVolume / 100); speakAt(index + 1); } else { setIsPlaying(false); setCurrentIndex(0); stopAmbience(); clearPlaybackNotification(); } }; gapTimerRef.current = setTimeout(advance, settingsRef.current.gapSeconds * 1000); },
@@ -101,6 +123,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const next = useCallback(() => { Speech.stop(); playbackTokenRef.current += 1; if (gapTimerRef.current) clearTimeout(gapTimerRef.current); if (currentIndex + 1 < entriesRef.current.length) speakAt(currentIndex + 1); }, [currentIndex, speakAt]);
   const previous = useCallback(() => { Speech.stop(); playbackTokenRef.current += 1; if (gapTimerRef.current) clearTimeout(gapTimerRef.current); if (currentIndex > 0) speakAt(currentIndex - 1); }, [currentIndex, speakAt]);
   const setSettings = useCallback((nextSettings: ListeningSettings) => { settingsRef.current = nextSettings; setSettingsState(nextSettings); }, []);
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.kind !== "gratitude-media") return;
+      if (response.actionIdentifier === MEDIA_ACTION_PREVIOUS) previous();
+      else if (response.actionIdentifier === MEDIA_ACTION_NEXT) next();
+      else if (response.actionIdentifier === MEDIA_ACTION_TOGGLE) toggle();
+      else if (response.actionIdentifier === MEDIA_ACTION_STOP) stop();
+    });
+    return () => subscription.remove();
+  }, [next, previous, stop, toggle]);
   const value = useMemo(() => ({ entries, currentIndex, isPlaying, isVisible, settings, playEntries, toggle, next, previous, stop, hide, setSettings }), [currentIndex, entries, hide, isPlaying, isVisible, next, playEntries, previous, setSettings, settings, stop, toggle]);
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;
 }

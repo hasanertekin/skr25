@@ -4,6 +4,12 @@ import { Platform } from "react-native";
 
 export const REMINDER_SETTINGS_KEY = "sukur-gunlugu.reminder.v1";
 export const DAILY_REMINDER_ID_KEY = "sukur-gunlugu.reminder.notification-id";
+export const MEDIA_NOTIFICATION_CATEGORY = "gratitude-media";
+export const MEDIA_NOTIFICATION_CHANNEL = "gratitude-media";
+export const MEDIA_ACTION_PREVIOUS = "media-previous";
+export const MEDIA_ACTION_TOGGLE = "media-toggle";
+export const MEDIA_ACTION_NEXT = "media-next";
+export const MEDIA_ACTION_STOP = "media-stop";
 
 export type ReminderSettings = {
   enabled: boolean;
@@ -54,7 +60,20 @@ export async function configureNotifications() {
       vibrationPattern: [0, 250, 150, 250],
       lightColor: "#2F7D5A",
     });
+    await Notifications.setNotificationChannelAsync(MEDIA_NOTIFICATION_CHANNEL, {
+      name: "Şükran oynatıcı kontrolleri",
+      importance: Notifications.AndroidImportance.LOW,
+      vibrationPattern: [0],
+      sound: null,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
   }
+  await Notifications.setNotificationCategoryAsync(MEDIA_NOTIFICATION_CATEGORY, [
+    { identifier: MEDIA_ACTION_PREVIOUS, buttonTitle: "Önceki", options: { opensAppToForeground: false } },
+    { identifier: MEDIA_ACTION_TOGGLE, buttonTitle: "Oynat / Duraklat", options: { opensAppToForeground: false } },
+    { identifier: MEDIA_ACTION_NEXT, buttonTitle: "Sonraki", options: { opensAppToForeground: false } },
+    { identifier: MEDIA_ACTION_STOP, buttonTitle: "Durdur", options: { isDestructive: true, opensAppToForeground: false } },
+  ]).catch(() => undefined);
 }
 
 export async function setDailyReminder(settings: ReminderSettings) {
