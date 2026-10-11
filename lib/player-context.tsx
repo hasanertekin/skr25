@@ -448,10 +448,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playEntries = useCallback((nextEntries: GratitudeEntry[], startIndex = 0, ambienceUri?: string | null, nextSourceLabel = "Şükürlerin", voiceIdentifier?: string, speechRate?: number) => {
     clearPendingAdvance();
     stopAmbience();
-    activeAmbienceRef.current = ambienceUri;
+    const safeAmbienceUri = ambienceUri && (ambienceUri === DEFAULT_AMBIENCE_URI || ambienceUri.startsWith("file://")) ? ambienceUri : null;
+    activeAmbienceRef.current = safeAmbienceUri;
     activeVoiceIdentifierRef.current = voiceIdentifier;
     activeSpeechRateRef.current = typeof speechRate === "number" ? Math.min(2, Math.max(0.5, speechRate)) : undefined;
-    const queue = [...nextEntries];
+    const queue = nextEntries.filter((entry) => typeof entry.text === "string" && entry.text.trim().length > 0);
     entriesRef.current = queue;
     currentIndexRef.current = Math.max(0, Math.min(startIndex, queue.length - 1));
     sourceLabelRef.current = nextSourceLabel;

@@ -29,6 +29,11 @@ export type PlaylistFolder = {
   createdAt: string;
   /** Built-in cover selected from the small, bundled folder-cover set. */
   coverId?: FolderCoverId | null;
+  coverUri?: string | null;
+  atmosphereUri?: string | null;
+  atmosphereName?: string | null;
+  voiceIdentifier?: string | null;
+  speechRate?: number;
   /** Parent folder ID; null/undefined means library root. */
   parentId?: string | null;
   /** Shared ordering index among playlists and folders at the same level. */
@@ -78,6 +83,11 @@ export function normalizePlaylistFolders(value: unknown): PlaylistFolder[] {
       name: item.name,
       createdAt: item.createdAt,
       coverId: FOLDER_COVER_IDS.includes(item.coverId) ? item.coverId : null,
+      coverUri: typeof item.coverUri === "string" ? item.coverUri : null,
+      atmosphereUri: typeof item.atmosphereUri === "string" ? item.atmosphereUri : null,
+      atmosphereName: typeof item.atmosphereName === "string" ? item.atmosphereName : null,
+      voiceIdentifier: typeof item.voiceIdentifier === "string" ? item.voiceIdentifier : null,
+      speechRate: typeof item.speechRate === "number" ? Math.min(2, Math.max(0.5, item.speechRate)) : undefined,
       parentId: typeof item.parentId === "string" && item.parentId !== item.id ? item.parentId : null,
       sortOrder: Number.isInteger(item.sortOrder) && item.sortOrder >= 0 ? item.sortOrder : undefined,
     });
@@ -216,4 +226,20 @@ export async function ensureDefaultPlaylist(): Promise<Playlist[]> {
 
 export function entriesForPlaylist(entries: GratitudeEntry[], playlist: Playlist) {
   return playlist.entryIds.map((id) => entries.find((entry) => entry.id === id)).filter(Boolean) as GratitudeEntry[];
+}
+
+export function inheritedFolderSettings(playlist: Playlist, folders: PlaylistFolder[]) {
+  let folderId = playlist.folderId ?? null;
+  const seen = new Set<string>();
+  const result: { atmosphereUri?: string; voiceIdentifier?: string; speechRate?: number } = {};
+  while (folderId && !seen.has(folderId)) {
+    seen.add(folderId);
+    const folder = folders.find((item) => item.id === folderId);
+    if (!folder) break;
+    if (!result.atmosphereUri && folder.atmosphereUri) result.atmosphereUri = folder.atmosphereUri;
+    if (!result.voiceIdentifier && folder.voiceIdentifier) result.voiceIdentifier = folder.voiceIdentifier;
+    if (result.speechRate === undefined && typeof folder.speechRate === "number") result.speechRate = folder.speechRate;
+    folderId = folder.parentId ?? null;
+  }
+  return result;
 }

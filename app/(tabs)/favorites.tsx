@@ -4,6 +4,7 @@ import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useFocusEffect, useRouter, type Href } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import DraggableFlatList, { ScaleDecorator, type RenderItemParams } from "react-native-draggable-flatlist";
+import { SortOrderModal, type SortOrderItem } from "@/components/sort-order-modal";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { FolderCoverPhoto, FolderCoverSelector } from "@/components/folder-cover";
@@ -23,6 +24,7 @@ export default function FavoritesScreen() {
   const [folderDraft, setFolderDraft] = useState("");
   const [folderCoverId, setFolderCoverId] = useState<FolderCoverId>(FOLDER_COVER_IDS[0]);
   const [reorderMode, setReorderMode] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
   const [savingItem, setSavingItem] = useState(false);
   const operationLock = useRef(false);
@@ -98,9 +100,16 @@ export default function FavoritesScreen() {
     }
   };
 
-  const startReorder = () => {
-    originalOrder.current = libraryItems;
-    setReorderMode(true);
+  const startReorder = () => setSortOpen(true);
+  const sortItems: SortOrderItem[] = libraryItems.map((item) => item.kind === "folder"
+    ? { id: `folder:${item.folder.id}`, title: item.folder.name, subtitle: "Klasör", icon: "folder-outline" }
+    : { id: `playlist:${item.playlist.id}`, title: item.playlist.name, subtitle: `${entriesForPlaylist(entries, item.playlist).length} not`, icon: "bookmark-outline" });
+  const saveSort = async (ids: string[]) => {
+    const byId = new Map(libraryItems.map((item) => [`${item.kind}:${item.id}`, item]));
+    const ordered = ids.map((id) => byId.get(id)).filter((item): item is LibraryItem => Boolean(item));
+    const next = applyLibraryOrder(ordered, playlists, folders, null);
+    await Promise.all([savePlaylists(next.playlists), savePlaylistFolders(next.folders)]);
+    setPlaylists(next.playlists); setFolders(next.folders); setSortOpen(false);
   };
 
   const discardReorder = () => {
@@ -234,6 +243,7 @@ export default function FavoritesScreen() {
 
   return (
     <ScreenContainer>
+      <SortOrderModal visible={sortOpen} title="Koleksiyonların sırası" description="Yukarı ve aşağı oklarla klasör ve playlist sırasını düzenle." items={sortItems} onClose={() => setSortOpen(false)} onSave={(ids) => { void saveSort(ids); }} palette={palette} />
       <DraggableFlatList
         data={libraryItems}
         keyExtractor={(item) => `${item.kind}:${item.id}`}

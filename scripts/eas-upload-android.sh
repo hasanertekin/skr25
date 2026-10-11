@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ACCOUNT="${1:-ertekinhss-team}"
+ACCOUNT="${1:-hasanertekin25s-team}"
 
 if [[ ! -f "eas.json" || ! -f "app.config.ts" ]]; then
   echo "Bu script'i Expo projesinin kök dizininde çalıştırın." >&2

@@ -19,12 +19,8 @@ import { useThemeContext } from "@/lib/theme-provider";
 import { PlaylistPicker } from "@/components/playlist-picker";
 import { motivationalQuotes } from "@/lib/motivational-quotes";
 import { deleteManagedFile, persistImageAsset, persistPickedFile } from "@/lib/local-files";
-import { NowPlayingIndicator } from "@/components/now-playing-indicator";
+import { GratitudeEntryCard } from "@/components/gratitude-entry-card";
 import { withPrivacyLockExemption } from "@/lib/privacy-lock-exemption";
-
-function formatEntryTime(date: Date) {
-  return date.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
-}
 
 function formatRecordingDuration(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -226,14 +222,8 @@ export default function HomeScreen() {
 
   const chooseImage = async () => {
     if (Platform.OS === "web") {
-      try {
-        const permission = await withPrivacyLockExemption(() => ImagePicker.requestMediaLibraryPermissionsAsync());
-        if (!permission.granted) return;
-        const result = await withPrivacyLockExemption(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1 }));
-        if (!result.canceled && result.assets[0]) setImageDraft({ uri: result.assets[0].uri, name: result.assets[0].fileName || "sukran-anisi.jpg" });
-      } catch {
-        Alert.alert("Fotoğraf eklenemedi", "Fotoğraf okunamadı. Başka bir görsel seçip yeniden deneyebilirsin.");
-      }
+      const result = await withPrivacyLockExemption(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1 }));
+      if (!result.canceled && result.assets[0]) setImageDraft({ uri: result.assets[0].uri, name: result.assets[0].fileName || "sukran-anisi.jpg" });
       return;
     }
     photoCursorRef.current = null;
@@ -243,42 +233,20 @@ export default function HomeScreen() {
   };
 
   const selectPhoto = async (asset: MediaLibrary.Asset) => {
+    const selectedName = asset.filename || "Fotoğraf";
+    if (imageDraft) await deleteManagedFile(imageDraft.uri);
+    setImageDraft({ uri: asset.uri, name: selectedName });
+    setPhotoPickerOpen(false);
     try {
       const info = await MediaLibrary.getAssetInfoAsync(asset, { shouldDownloadFromNetwork: true });
       const candidates = [...new Set([info.localUri, info.uri, asset.uri].filter((value): value is string => Boolean(value)))];
       let storedUri: string | null = null;
-      let lastError: unknown;
       for (const sourceUri of candidates) {
-        try {
-          storedUri = await persistImageAsset(sourceUri, asset.filename || "sukran-anisi.jpg", "gratitude-image-draft");
-          break;
-        } catch (error) { lastError = error; }
+        try { storedUri = await persistImageAsset(sourceUri, asset.filename || "sukran-anisi.jpg", "gratitude-image-draft"); break; } catch { /* try next provider URI */ }
       }
-      if (!storedUri) throw lastError ?? new Error("Fotoğraf URI’si çözümlenemedi.");
-      if (imageDraft) await deleteManagedFile(imageDraft.uri);
-      setImageDraft({ uri: storedUri, name: asset.filename || "Fotoğraf" });
-      setPhotoPickerOpen(false);
-    } catch (error) {
-      console.error("[gratitude-photo-import]", error);
-      setPhotoPickerOpen(false);
-      // Some Android providers expose a MediaLibrary URI that neither FileSystem nor the decoder
-      // can read. Hand off to the platform photo picker for a temporary, app-readable URI.
-      await chooseImageFromSystem();
-    }
-  };
-
-  const chooseImageFromSystem = async () => {
-    try {
-      const result = await withPrivacyLockExemption(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1 }));
-      if (result.canceled || !result.assets[0]) return;
-      const asset = result.assets[0];
-      const uri = await persistImageAsset(asset.uri, asset.fileName || "sukran-anisi.jpg", "gratitude-image-draft");
-      if (imageDraft) await deleteManagedFile(imageDraft.uri);
-      setImageDraft({ uri, name: asset.fileName || "Fotoğraf" });
-      setPhotoPickerOpen(false);
-    } catch (error) {
-      console.error("[gratitude-photo-system-picker]", error);
-      Alert.alert("Fotoğraf eklenemedi", "Fotoğraf seçilemedi veya uygulama alanına aktarılamadı. Başka bir görselle yeniden deneyebilirsin.");
+      if (storedUri) setImageDraft({ uri: storedUri, name: selectedName });
+    } catch {
+      // The provider URI remains selected; saving will retry normalization.
     }
   };
 
@@ -289,7 +257,7 @@ export default function HomeScreen() {
 
   const addEntry = useCallback(async () => {
     const text = draft.trim();
-    if ((!text && !audioDraft) || isSaving || saveLockRef.current) return;
+    if ((!text && !audioDraft && !imageDraft) || isSaving || saveLockRef.current) return;
     saveLockRef.current = true;
     setIsSaving(true);
     let storedAudioUri: string | undefined;
@@ -298,10 +266,10 @@ export default function HomeScreen() {
       if (audioDraft) storedAudioUri = await persistPickedFile(audioDraft.uri, audioDraft.name, "gratitude-audio");
       if (imageDraft) storedImageUri = imageDraft.uri.startsWith(FileSystem.documentDirectory ?? "\u0000")
         ? imageDraft.uri
-        : await persistPickedFile(imageDraft.uri, imageDraft.name, "gratitude-image");
+        : await persistImageAsset(imageDraft.uri, imageDraft.name, "gratitude-image");
       const nextEntry: GratitudeEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        text: text || "Ses kaydı",
+        text: text || (storedImageUri ? "Görüntü kaydı" : "Ses kaydı"),
         createdAt: new Date().toISOString(),
         ...(storedAudioUri ? { audioUri: storedAudioUri, audioName: audioDraft?.name } : {}),
         ...(storedImageUri ? { imageUri: storedImageUri, imageName: imageDraft?.name } : {}),
@@ -548,11 +516,11 @@ export default function HomeScreen() {
                   </View>
                   <Pressable
                     onPress={addEntry}
-                    disabled={(!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording}
+                    disabled={(!draft.trim() && !audioDraft && !imageDraft) || isSaving || recorderState.isRecording}
                     accessibilityRole="button"
                     accessibilityLabel={draft.trim() ? "Notu kaydet" : "Ses kaydını kaydet"}
-                    accessibilityState={{ disabled: (!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording }}
-                    style={({ pressed }) => [styles.addButton, ((!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording) && styles.addButtonDisabled, pressed && styles.pressed]}
+                    accessibilityState={{ disabled: (!draft.trim() && !audioDraft && !imageDraft) || isSaving || recorderState.isRecording }}
+                    style={({ pressed }) => [styles.addButton, ((!draft.trim() && !audioDraft && !imageDraft) || isSaving || recorderState.isRecording) && styles.addButtonDisabled, pressed && styles.pressed]}
                   >
                     <Text style={styles.addButtonText}>{isSaving ? "Kaydediliyor" : recorderState.isRecording ? "Önce kaydı bitir" : "Kaydet"}</Text>
                     <Ionicons name="arrow-forward" size={16} color={colors.onPrimary} />
@@ -597,37 +565,7 @@ export default function HomeScreen() {
           }
           renderItem={({ item, index }) => {
             const isNowPlaying = isPlaying && playingEntries[currentIndex]?.id === item.id;
-            return (
-              <View style={[styles.entryCard, isNowPlaying && styles.entryCardPlaying]}>
-                <View style={styles.entryIndexColumn}>
-                  <Pressable
-                    onPress={() => playEntries(todayEntries, index, undefined, "Bugün")}
-                    style={({ pressed }) => [styles.entryAction, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Bu kayıttan oynat"
-                    hitSlop={4}
-                  >
-                    <Ionicons name="play" size={15} color={colors.primary} />
-                  </Pressable>
-                  <Pressable
-                    onPress={() => setActionEntry(item)}
-                    style={({ pressed }) => [styles.entryAction, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Düzenle, listelere ekle veya sil"
-                    hitSlop={4}
-                  >
-                    <Ionicons name="ellipsis-horizontal" size={17} color={colors.muted} />
-                  </Pressable>
-                </View>
-                <View style={styles.entryCopy}>
-                  <Text style={styles.entryText}>{item.text}</Text>
-                  {item.imageUri ? <Pressable onPress={() => setImagePreviewUri(item.imageUri ?? null)} accessibilityRole="button" accessibilityLabel="Notun fotoğrafını büyüt"><Image source={{ uri: item.imageUri }} style={styles.entryImage} resizeMode="contain" /></Pressable> : null}
-                  {item.audioName ? <View style={styles.entryAttachment}><Ionicons name="musical-note-outline" size={13} color={colors.muted} /><Text numberOfLines={1} style={styles.entryAttachmentText}>{item.audioName}</Text></View> : null}
-                  {isNowPlaying ? <View style={styles.nowPlayingRow}><NowPlayingIndicator color={colors.primary} /><Text style={styles.nowPlayingLabel}>Şimdi çalıyor</Text></View> : null}
-                  <Text style={styles.entryMeta}>{formatEntryTime(new Date(item.createdAt))}</Text>
-                </View>
-              </View>
-            );
+            return <GratitudeEntryCard entry={item} index={index} active={isNowPlaying} onPlay={() => playEntries(todayEntries, index, undefined, "Bugün")} onMore={() => setActionEntry(item)} onImagePress={setImagePreviewUri} />;
           }}
         />
         <Modal visible={Boolean(actionEntry)} transparent animationType="fade" onRequestClose={() => setActionEntry(null)}>
@@ -674,19 +612,10 @@ export default function HomeScreen() {
             <Pressable style={StyleSheet.absoluteFill} onPress={() => setPhotoPickerOpen(false)} accessibilityLabel="Fotoğraf galerisini kapat" />
             <View style={styles.gallerySheet}>
               <View style={styles.galleryHeader}>
-                <View style={styles.galleryHeading}>
-                  <Text style={styles.galleryTitle}>Bir fotoğraf seç</Text>
-                  <Text style={styles.galleryHint}>Fotoğraf kırpılmadan eklenecek.</Text>
-                </View>
+                <View style={styles.galleryHeading}><Text style={styles.galleryTitle}>Bir fotoğraf seç</Text><Text style={styles.galleryHint}>Fotoğraf kırpılmadan eklenecek.</Text></View>
                 <Pressable onPress={() => setPhotoPickerOpen(false)} style={styles.galleryClose} accessibilityRole="button" accessibilityLabel="Galeriyi kapat"><Ionicons name="close" size={20} color={colors.ink} /></Pressable>
               </View>
-              {photoError ? (
-                <View style={styles.galleryMessage}>
-                  <Ionicons name={photoAssets.length ? "information-circle-outline" : "images-outline"} size={25} color={colors.primary} />
-                  <Text style={styles.galleryMessageText}>{photoError}</Text>
-                  {!photoAssets.length ? <Pressable onPress={() => void loadPhotoPage(true)} style={styles.galleryRetry}><Text style={styles.galleryRetryText}>Yeniden dene</Text></Pressable> : null}
-                </View>
-              ) : null}
+              {photoError ? <View style={styles.galleryMessage}><Ionicons name={photoAssets.length ? "information-circle-outline" : "images-outline"} size={25} color={colors.primary} /><Text style={styles.galleryMessageText}>{photoError}</Text>{!photoAssets.length ? <Pressable onPress={() => void loadPhotoPage(true)} style={styles.galleryRetry}><Text style={styles.galleryRetryText}>Yeniden dene</Text></Pressable> : null}</View> : null}
               <FlatList
                 data={photoAssets}
                 keyExtractor={(asset) => asset.id}
@@ -696,14 +625,7 @@ export default function HomeScreen() {
                 showsVerticalScrollIndicator={false}
                 onEndReached={() => { if (photoHasNext && !photoLoading) void loadPhotoPage(false); }}
                 onEndReachedThreshold={0.45}
-                initialNumToRender={24}
-                maxToRenderPerBatch={24}
-                windowSize={7}
-                renderItem={({ item }) => (
-                  <Pressable onPress={() => void selectPhoto(item)} style={({ pressed }) => [styles.galleryTile, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={`${item.filename} fotoğrafını seç`}>
-                    <Image source={{ uri: item.uri }} style={styles.galleryThumb} resizeMode="cover" />
-                  </Pressable>
-                )}
+                renderItem={({ item }) => <Pressable onPress={() => void selectPhoto(item)} style={({ pressed }) => [styles.galleryTile, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={`${item.filename} fotoğrafını seç`}><Image source={{ uri: item.uri }} style={styles.galleryThumb} resizeMode="cover" /></Pressable>}
                 ListEmptyComponent={photoLoading ? <Text style={styles.galleryEmpty}>Fotoğraflar yükleniyor…</Text> : photoError ? null : <Text style={styles.galleryEmpty}>Fotoğraf bulunamadı.</Text>}
                 ListFooterComponent={photoLoading && photoAssets.length > 0 ? <Text style={styles.galleryEmpty}>Diğer fotoğraflar yükleniyor…</Text> : photoHasNext ? <Text style={styles.galleryEmpty}>Daha fazla görmek için aşağı kaydır.</Text> : null}
               />

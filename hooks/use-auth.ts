@@ -60,15 +60,41 @@ export function useAuth(options?: UseAuthOptions) {
         return;
       }
 
-      // Use cached user info for native (token validates the session)
       const cachedUser = await Auth.getUserInfo();
       console.log("[useAuth] Cached user:", cachedUser);
-      if (cachedUser) {
-        console.log("[useAuth] Using cached user info");
-        setUser(cachedUser);
-      } else {
-        console.log("[useAuth] No cached user, setting user to null");
-        setUser(null);
+      try {
+        const apiUser = await Api.getMe({ throwOnError: true });
+        if (apiUser) {
+          const userInfo: Auth.User = {
+            id: apiUser.id,
+            openId: apiUser.openId,
+            name: apiUser.name,
+            email: apiUser.email,
+            avatarUrl: apiUser.avatarUrl,
+            loginMethod: apiUser.loginMethod,
+            lastSignedIn: new Date(apiUser.lastSignedIn),
+          };
+          await Auth.setUserInfo(userInfo);
+          setUser(userInfo);
+        } else {
+          await Auth.removeSessionToken();
+          await Auth.clearUserInfo();
+          setUser(null);
+        }
+      } catch (err) {
+        const validationError = err instanceof Error ? err : new Error("Oturum doğrulanamadı");
+        const isUnauthorized = err instanceof Api.ApiError && (err.status === 401 || err.status === 403);
+        if (isUnauthorized) {
+          await Auth.removeSessionToken();
+          await Auth.clearUserInfo();
+          setUser(null);
+        } else if (cachedUser) {
+          // Keep the cached identity only when validation was blocked by a network/configuration failure.
+          setUser(cachedUser);
+        } else {
+          setUser(null);
+        }
+        setError(validationError);
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error("Failed to fetch user");
@@ -105,18 +131,8 @@ export function useAuth(options?: UseAuthOptions) {
         console.log("[useAuth] Web: fetching user from API...");
         fetchUser();
       } else {
-        // Native: check for cached user info first for faster initial load
-        Auth.getUserInfo().then((cachedUser) => {
-          console.log("[useAuth] Native cached user check:", cachedUser);
-          if (cachedUser) {
-            console.log("[useAuth] Native: setting cached user immediately");
-            setUser(cachedUser);
-            setLoading(false);
-          } else {
-            // No cached user, check session token
-            fetchUser();
-          }
-        });
+        // Native: validate the SecureStore token before trusting cached user data.
+        fetchUser();
       }
     } else {
       console.log("[useAuth] autoFetch disabled, setting loading to false");

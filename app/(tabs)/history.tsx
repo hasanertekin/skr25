@@ -4,7 +4,9 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { AppTopActions } from "@/components/app-top-actions";
+import { ScreenHeader } from "@/components/ui/screen-header";
+import { EmptyState } from "@/components/ui/common";
+import { GratitudeEntryCard } from "@/components/gratitude-entry-card";
 import { localDateKey, loadGratitudeEntries, pickRandomEntries, type GratitudeEntry } from "@/lib/gratitude";
 import { getMonthGrid } from "@/lib/calendar";
 import { usePlayer } from "@/lib/player-context";
@@ -108,14 +110,7 @@ export default function HistoryScreen() {
           }
         }}
       >
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.eyebrow}>ZAMANDA KÜÇÜK BİR YOLCULUK</Text>
-            <Text style={styles.title}>Geçmişin</Text>
-          </View>
-          <AppTopActions />
-        </View>
-        <Text style={styles.intro}>İyi gelen anlarına dilediğin zaman geri dön.</Text>
+        <ScreenHeader eyebrow="ZAMANDA KÜÇÜK BİR YOLCULUK" title="Geçmişin" intro="İyi gelen anlarına dilediğin zaman geri dön." />
 
         {!query ? (
           <>
@@ -218,48 +213,25 @@ export default function HistoryScreen() {
                   <Text style={styles.listenAllText}>Dinle</Text>
                 </Pressable>
               </View>
-              {filtered.map((entry, index) => (
-                <Pressable key={entry.id} onPress={() => playEntries(filtered, index, undefined, "Geçmiş · arama")} style={({ pressed }) => [styles.resultCard, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Bu notu dinle">
-                  <View style={styles.resultMark}><Ionicons name="leaf-outline" size={16} color={colors.primary} /></View>
-                  <View style={styles.resultCopy}>
-                    <Text style={styles.resultText}>{entry.text}</Text>
-                    <Text style={styles.resultMeta}>{new Date(entry.createdAt).toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" })}</Text>
-                  </View>
-                </Pressable>
-              ))}
+              {filtered.map((entry, index) => <GratitudeEntryCard key={entry.id} entry={entry} index={index} showDate onPlay={() => playEntries(filtered, index, undefined, "Geçmiş · arama")} />)}
             </View>
           ) : (
-            <View style={styles.emptyState}>
-              <Ionicons name="search-outline" size={23} color={colors.primary} />
-              <Text style={styles.emptyTitle}>Bu sözlerle eşleşen bir not yok</Text>
-              <Text style={styles.emptyText}>Başka bir kelime deneyebilir ya da aramayı temizleyebilirsin.</Text>
-            </View>
+          <EmptyState icon="search-outline" title="Bu sözlerle eşleşen bir not yok" description="Başka bir kelime deneyebilir ya da aramayı temizleyebilirsin." />
           )
         ) : groups.length === 0 ? (
-          <View style={styles.emptyState}>
-            <View style={styles.emptyIcon}><Ionicons name="book-outline" size={24} color={colors.primary} /></View>
-            <Text style={styles.emptyTitle}>Geçmişin zamanla oluşacak</Text>
-            <Text style={styles.emptyText}>Yazdığın notlar burada gün gün, istediğin zaman dönmen için saklanır.</Text>
-          </View>
+          <EmptyState icon="book-outline" title="Geçmişin zamanla oluşacak" description="Yazdığın notlar burada gün gün, istediğin zaman dönmen için saklanır." />
         ) : (
           <View style={styles.dayList}>
             {visibleGroups.map((group) => {
               const isToday = group.key === localDateKey(new Date());
               return (
-                <Pressable
-                  key={group.key}
-                  onPress={() => router.push({ pathname: "/history/[date]", params: { date: group.key } })}
-                  style={({ pressed }) => [styles.dayCard, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${isToday ? "Bugün" : formatDay(group.date)}, ${group.entries.length} not`}
-                >
-                  <View style={styles.dayIcon}><Ionicons name={isToday ? "sunny-outline" : "calendar-outline"} size={19} color={colors.primary} /></View>
-                  <View style={styles.dayCopy}>
-                    <Text style={styles.dayTitle}>{isToday ? "Bugün" : formatDay(group.date)}</Text>
-                  </View>
-                  <View style={styles.dayCount}><Text style={styles.dayCountText}>{group.entries.length}</Text></View>
-                  <Ionicons name="chevron-forward" size={19} color={colors.muted} />
-                </Pressable>
+                <View key={group.key}>
+                  <Pressable onPress={() => router.push({ pathname: "/history/[date]", params: { date: group.key } })} style={({ pressed }) => [styles.dayCard, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={`${isToday ? "Bugün" : formatDay(group.date)}, ${group.entries.length} not`}>
+                    <View style={styles.dayIcon}><Ionicons name={isToday ? "sunny-outline" : "calendar-outline"} size={19} color={colors.primary} /></View>
+                    <View style={styles.dayCopy}><Text style={styles.dayTitle}>{isToday ? "Bugün" : formatDay(group.date)}</Text></View>
+                    <View style={styles.dayCount}><Text style={styles.dayCountText}>{group.entries.length}</Text></View><Ionicons name="chevron-forward" size={19} color={colors.muted} />
+                  </Pressable>
+                </View>
               );
             })}
             {visibleGroups.length < groups.length ? <Text style={styles.loadMoreHint}>Aşağı kaydırdıkça daha eski günler yüklenecek.</Text> : null}

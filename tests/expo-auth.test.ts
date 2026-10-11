@@ -15,6 +15,6 @@ describe("Expo authentication", () => {
       timeout: 20_000,
       env: process.env,
     });
-    expect(projectInfo).toContain("ertekinhss-team");
+    expect(projectInfo).toContain("hasanertekin25s-team");
   }, 30_000);
 });

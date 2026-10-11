@@ -4,6 +4,7 @@ import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useFocusEffect, useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import DraggableFlatList, { ScaleDecorator, type RenderItemParams } from "react-native-draggable-flatlist";
+import { SortOrderModal, type SortOrderItem } from "@/components/sort-order-modal";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { FolderCoverPhoto, FolderCoverSelector } from "@/components/folder-cover";
@@ -32,6 +33,7 @@ export default function PlaylistFolderScreen() {
   const [createFolderCoverId, setCreateFolderCoverId] = useState<FolderCoverId>(FOLDER_COVER_IDS[0]);
   const [folderCoverDraft, setFolderCoverDraft] = useState<FolderCoverId>(FOLDER_COVER_IDS[0]);
   const [reorderMode, setReorderMode] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
   const [folderLoading, setFolderLoading] = useState(true);
   const [folderLoadError, setFolderLoadError] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
@@ -141,9 +143,16 @@ export default function PlaylistFolderScreen() {
     }
   };
 
-  const startReorder = () => {
-    originalOrder.current = libraryItems;
-    setReorderMode(true);
+  const startReorder = () => setSortOpen(true);
+  const sortItems: SortOrderItem[] = libraryItems.map((item) => item.kind === "folder"
+    ? { id: `folder:${item.folder.id}`, title: item.folder.name, subtitle: "Alt klasör", icon: "folder-outline" }
+    : { id: `playlist:${item.playlist.id}`, title: item.playlist.name, subtitle: `${entriesForPlaylist(entries, item.playlist).length} not`, icon: "bookmark-outline" });
+  const saveSort = async (ids: string[]) => {
+    const byId = new Map(libraryItems.map((item) => [`${item.kind}:${item.id}`, item]));
+    const ordered = ids.map((id) => byId.get(id)).filter((item): item is LibraryItem => Boolean(item));
+    const next = applyLibraryOrder(ordered, playlists, folders, folderId);
+    await Promise.all([savePlaylists(next.playlists), savePlaylistFolders(next.folders)]);
+    setPlaylists(next.playlists); setFolders(next.folders); setSortOpen(false);
   };
 
   const discardOrder = () => {
@@ -330,9 +339,9 @@ export default function PlaylistFolderScreen() {
         <Text style={styles.section}>İçerik</Text>
         <Text style={styles.count}>{libraryItems.length}</Text>
         <Pressable
-          onPress={() => isFolderPlaying ? stop() : playEntries(folderEntries, 0, undefined, folderSourceLabel)}
-          disabled={!folderEntries.length || reorderMode}
-          style={({ pressed }) => [styles.folderPlayButton, (!folderEntries.length || reorderMode) && styles.disabled, pressed && styles.pressed]}
+          onPress={() => isFolderPlaying ? stop() : playEntries(folderEntries.filter((entry) => entry.text.trim()), 0, undefined, folderSourceLabel)}
+          disabled={!folderEntries.some((entry) => entry.text.trim()) || reorderMode}
+          style={({ pressed }) => [styles.folderPlayButton, (!folderEntries.some((entry) => entry.text.trim()) || reorderMode) && styles.disabled, pressed && styles.pressed]}
           accessibilityRole="button"
           accessibilityLabel={isFolderPlaying ? "Klasördeki notları durdur" : "Klasördeki tüm notları dinle"}
           accessibilityState={{ disabled: !folderEntries.length || reorderMode }}
@@ -361,6 +370,7 @@ export default function PlaylistFolderScreen() {
 
   return (
     <ScreenContainer>
+      <SortOrderModal visible={sortOpen} title="Klasör içeriğinin sırası" description="Alt klasör ve playlistleri yukarı ve aşağı oklarla düzenle." items={sortItems} onClose={() => setSortOpen(false)} onSave={(ids) => { void saveSort(ids); }} palette={palette} />
       <View style={styles.screen}>
         <DraggableFlatList
           style={styles.list}

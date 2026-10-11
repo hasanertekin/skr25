@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Speech from "expo-speech";
 import DraggableFlatList, { ScaleDecorator, type RenderItemParams } from "react-native-draggable-flatlist";
+import { SortOrderModal, type SortOrderItem } from "@/components/sort-order-modal";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { loadGratitudeEntries, saveGratitudeEntries, type GratitudeEntry } from "@/lib/gratitude";
@@ -40,6 +41,7 @@ export default function PlaylistDetail() {
   const [nameDraft, setNameDraft] = useState("");
   const [textDraft, setTextDraft] = useState("");
   const [reorderMode, setReorderMode] = useState(false);
+  const [sortOpen, setSortOpen] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
   const [listViewportHeight, setListViewportHeight] = useState(0);
   const originalOrder = useRef<string[]>([]);
@@ -80,10 +82,12 @@ export default function PlaylistDetail() {
     return () => clearTimeout(timer);
   }, [listViewportHeight, nowPlayingIndex, list.length, reorderMode]);
 
-  const startReorder = () => {
+  const startReorder = () => setSortOpen(true);
+  const sortItems: SortOrderItem[] = list.map((entry) => ({ id: entry.id, title: entry.text, subtitle: entry.audioName ?? (entry.imageUri ? "Görüntü kaydı" : "Şükran notu") }));
+  const saveSort = async (ids: string[]) => {
     if (!playlist) return;
-    originalOrder.current = [...playlist.entryIds];
-    setReorderMode(true);
+    const nextLists = (await loadPlaylists()).map((item) => item.id === playlist.id ? { ...item, entryIds: ids } : item);
+    await savePlaylists(nextLists); setPlaylist({ ...playlist, entryIds: ids }); setSortOpen(false);
   };
 
   const discardOrder = () => {
@@ -377,6 +381,7 @@ export default function PlaylistDetail() {
 
   return (
     <ScreenContainer>
+      <SortOrderModal visible={sortOpen} title="Notların sırası" description="Şükran notlarını yukarı ve aşağı oklarla düzenle." items={sortItems} onClose={() => setSortOpen(false)} onSave={(ids) => { void saveSort(ids); }} palette={palette} />
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.backButton} accessibilityRole="button" accessibilityLabel="Geri dön">
           <Ionicons name="chevron-back" size={23} color={palette.foreground} />

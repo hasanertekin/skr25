@@ -6,14 +6,13 @@ import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { AppTopActions } from "@/components/app-top-actions";
+import { ScreenHeader } from "@/components/ui/screen-header";
 import { getDayChart, getMonthsOfYearChart, getWeeksChart, getYearsChart, isToday, isWithinCurrentMonth, isWithinCurrentWeek, loadGratitudeEntries, type GratitudeEntry } from "@/lib/gratitude";
 import { loadProfilePreferences, saveProfilePreferences, type ProfilePreferences } from "@/lib/app-preferences";
 import { getLevelForCount, getRankForCount, RANKS } from "@/lib/profile-ranks";
 import { getBadges, type Badge } from "@/lib/gamification";
 import { persistPickedFile } from "@/lib/local-files";
 import { withPrivacyLockExemption } from "@/lib/privacy-lock-exemption";
-import { useAuth } from "@/hooks/use-auth";
 import { useThemeContext } from "@/lib/theme-provider";
 
 type ChartRange = "day" | "week" | "month" | "year";
@@ -85,7 +84,6 @@ function GamificationPanel({ entries }: { entries: GratitudeEntry[] }) {
 }
 
 export default function ProfileScreen() {
-  const { user } = useAuth();
   const { palette } = useThemeContext();
   const colors = useMemo<Record<string, string>>(() => ({
     ...palette,
@@ -256,8 +254,9 @@ export default function ProfileScreen() {
     return `${formatPeriodDate(start)} – ${formatPeriodDate(end)}`;
   })();
   const max = Math.max(...data.map((item) => item.value), 1);
-  const displayName = profile.displayName.trim() || user?.name?.trim() || "Şükür yolcusu";
-  const avatar = profile.avatarUri || user?.avatarUrl;
+  // Profil ayarları cihazda tutulur; Google hesabı/yedekleme entegrasyonu daha sonra ayrıca eklenecek.
+  const displayName = profile.displayName.trim() || "Şükür yolcusu";
+  const avatar = profile.avatarUri;
   const nextRank = RANKS.find((item) => item.min > last21.length);
 
   const chartGesture = useMemo(() => PanResponder.create({
@@ -269,7 +268,7 @@ export default function ProfileScreen() {
   }), [shiftPeriod]);
 
   const openEditor = () => {
-    setNameDraft(profile.displayName || user?.name || "");
+    setNameDraft(profile.displayName);
     setEditOpen(true);
   };
 
@@ -304,13 +303,7 @@ export default function ProfileScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.primary} />}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.eyebrow}>KENDİNE AYIRDIĞIN ALAN</Text>
-            <Text style={styles.title}>Profilin</Text>
-          </View>
-          <AppTopActions />
-        </View>
+        <ScreenHeader eyebrow="KENDİNE AYIRDIĞIN ALAN" title="Profilin" intro="Küçük alışkanlıklarını, ritmini ve iyi gelen anlarını burada gör." />
 
         <View style={styles.profileCard}>
           <View style={styles.profileTop}>

@@ -7,6 +7,16 @@ type ApiResponse<T> = {
   error?: string;
 };
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -67,7 +77,7 @@ export async function apiCall<T>(endpoint: string, options: RequestInit = {}): P
       } catch {
         // Not JSON, use text as is
       }
-      throw new Error(errorMessage || `API call failed: ${response.statusText}`);
+      throw new ApiError(errorMessage || `API call failed: ${response.statusText}`, response.status);
     }
 
     const contentType = response.headers.get("content-type");
@@ -124,7 +134,7 @@ export async function logout(): Promise<void> {
 }
 
 // Get current authenticated user (web uses cookie-based auth)
-export async function getMe(): Promise<{
+export async function getMe(options?: { throwOnError?: boolean }): Promise<{
   id: number;
   openId: string;
   name: string | null;
@@ -132,12 +142,13 @@ export async function getMe(): Promise<{
   avatarUrl?: string | null;
   loginMethod: string | null;
   lastSignedIn: string;
-} | null> {
+  } | null> {
   try {
     const result = await apiCall<{ user: any }>("/api/auth/me");
     return result.user || null;
   } catch (error) {
     console.error("[API] getMe failed:", error);
+    if (options?.throwOnError) throw error;
     return null;
   }
 }

@@ -7,12 +7,13 @@ import * as FileSystem from "expo-file-system/legacy";
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from "expo-audio";
 
 import { ScreenContainer } from "@/components/screen-container";
+import { EmptyState } from "@/components/ui/common";
+import { GratitudeEntryCard } from "@/components/gratitude-entry-card";
 import { localDateKey, loadGratitudeEntries, saveGratitudeEntries, type GratitudeEntry } from "@/lib/gratitude";
 import { createLibraryId, ensureDefaultPlaylist, libraryItemsInFolder, loadPlaylistFolders, savePlaylists, type Playlist, type PlaylistFolder } from "@/lib/playlists";
 import { usePlayer } from "@/lib/player-context";
 import { useThemeContext } from "@/lib/theme-provider";
 import { deleteManagedFile, persistImageAsset, persistPickedFile } from "@/lib/local-files";
-import { NowPlayingIndicator } from "@/components/now-playing-indicator";
 import { PlaylistPicker } from "@/components/playlist-picker";
 import { withPrivacyLockExemption } from "@/lib/privacy-lock-exemption";
 
@@ -309,31 +310,7 @@ export default function HistoryDetailScreen() {
           ) : null}
         </View>
 
-        {entries.length ? entries.map((entry, index) => (
-          <View key={entry.id} style={[styles.entryCard, isPlaying && playingEntries[currentIndex]?.id === entry.id && styles.entryCurrent]}>
-            <View style={styles.entryMark}><Ionicons name="leaf-outline" size={17} color={colors.primary} /></View>
-            <View style={styles.entryCopy}>
-              <Text style={styles.entryText}>{entry.text}</Text>
-              {entry.imageUri ? <Pressable onPress={() => setImagePreviewUri(entry.imageUri ?? null)} accessibilityRole="button" accessibilityLabel="Ekli fotoğrafı görüntüle"><Image source={{ uri: entry.imageUri }} style={styles.entryImage} resizeMode="cover" /></Pressable> : null}
-              {entry.audioName ? <View style={styles.audioMeta}><Ionicons name="musical-note-outline" size={13} color={colors.muted} /><Text numberOfLines={1} style={styles.audioMetaText}>{entry.audioName}</Text></View> : null}
-              {isPlaying && playingEntries[currentIndex]?.id === entry.id ? <View style={styles.nowPlayingRow}><NowPlayingIndicator color={colors.primary} /><Text style={styles.nowPlayingLabel}>Şimdi çalıyor</Text></View> : null}
-              <Text style={styles.entryMeta}>{new Date(entry.createdAt).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</Text>
-            </View>
-            <View style={styles.actions}>
-              <Pressable onPress={() => playEntries(entries, index, undefined, "Geçmiş")} style={({ pressed }) => [styles.action, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Bu notu dinle" hitSlop={4}>
-                <Ionicons name="play-outline" size={19} color={colors.primary} />
-              </Pressable>
-              <Pressable onPress={() => setActionEntry(entry)} style={({ pressed }) => [styles.action, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Düzenle, listelere ekle veya sil" hitSlop={4}>
-                <Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} />
-              </Pressable>
-            </View>
-          </View>
-        )) : (
-          <View style={styles.empty}>
-            <Ionicons name="leaf-outline" size={24} color={colors.primary} />
-            <Text style={styles.emptyText}>Bu güne ait bir not bulunmuyor.</Text>
-          </View>
-        )}
+        {entries.length ? entries.map((entry, index) => <GratitudeEntryCard key={entry.id} entry={entry} index={index} active={isPlaying && playingEntries[currentIndex]?.id === entry.id} onPlay={() => playEntries(entries, index, undefined, "Geçmiş")} onMore={() => setActionEntry(entry)} onImagePress={setImagePreviewUri} />) : <EmptyState title="Bu güne ait bir not bulunmuyor" description="Bu tarihe yeni bir şükran notu eklediğinde burada görünecek." />}
       </ScrollView>
 
       <Modal visible={Boolean(actionEntry)} transparent animationType="fade" onRequestClose={() => setActionEntry(null)}>
