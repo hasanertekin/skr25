@@ -6,6 +6,7 @@ export const DEFAULT_AMBIENCE_NAME = "Yumuşak Akış (varsayılan)";
 
 export type ListeningSettings = {
   rate: number;
+  voiceIdentifier: string | null;
   gapSeconds: number;
   ambienceUri: string | null;
   ambienceName: string | null;
@@ -15,6 +16,7 @@ export type ListeningSettings = {
 
 export const DEFAULT_LISTENING_SETTINGS: ListeningSettings = {
   rate: 1.2,
+  voiceIdentifier: null,
   gapSeconds: 2,
   ambienceUri: DEFAULT_AMBIENCE_URI,
   ambienceName: DEFAULT_AMBIENCE_NAME,
@@ -25,6 +27,7 @@ export const DEFAULT_LISTENING_SETTINGS: ListeningSettings = {
 export function normalizeListeningSettings(parsed: Partial<ListeningSettings>): ListeningSettings {
   return {
     rate: typeof parsed.rate === "number" ? Math.min(2, Math.max(0.5, parsed.rate)) : DEFAULT_LISTENING_SETTINGS.rate,
+    voiceIdentifier: typeof parsed.voiceIdentifier === "string" && parsed.voiceIdentifier ? parsed.voiceIdentifier : null,
     gapSeconds: typeof parsed.gapSeconds === "number" ? Math.min(30, Math.max(0, parsed.gapSeconds)) : DEFAULT_LISTENING_SETTINGS.gapSeconds,
     ambienceUri: typeof parsed.ambienceUri === "string" ? parsed.ambienceUri : DEFAULT_AMBIENCE_URI,
     ambienceName: typeof parsed.ambienceName === "string" ? parsed.ambienceName : DEFAULT_AMBIENCE_NAME,

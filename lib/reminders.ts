@@ -5,7 +5,7 @@ import { Platform } from "react-native";
 export const REMINDER_SETTINGS_KEY = "sukur-gunlugu.reminder.v1";
 export const DAILY_REMINDER_ID_KEY = "sukur-gunlugu.reminder.notification-id";
 export const MEDIA_NOTIFICATION_CATEGORY = "gratitude-media";
-export const MEDIA_NOTIFICATION_CHANNEL = "gratitude-media";
+export const MEDIA_NOTIFICATION_CHANNEL = "gratitude-media-silent-v2";
 export const MEDIA_ACTION_PREVIOUS = "media-previous";
 export const MEDIA_ACTION_TOGGLE = "media-toggle";
 export const MEDIA_ACTION_NEXT = "media-next";
@@ -45,13 +45,16 @@ async function saveReminderSettings(settings: ReminderSettings) {
 export async function configureNotifications() {
   if (Platform.OS === "web") return;
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
+    handleNotification: async (notification) => {
+      const isMediaNotification = notification.request.content.data?.kind === "gratitude-media";
+      return {
       shouldShowAlert: true,
-      shouldPlaySound: true,
+      shouldPlaySound: !isMediaNotification,
       shouldSetBadge: false,
       shouldShowBanner: true,
       shouldShowList: true,
-    }),
+      };
+    },
   });
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("gratitude-reminder", {
@@ -65,7 +68,7 @@ export async function configureNotifications() {
       importance: Notifications.AndroidImportance.LOW,
       vibrationPattern: [0],
       sound: null,
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
     });
   }
   await Notifications.setNotificationCategoryAsync(MEDIA_NOTIFICATION_CATEGORY, [

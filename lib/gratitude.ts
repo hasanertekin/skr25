@@ -5,6 +5,10 @@ export type GratitudeEntry = {
   text: string;
   createdAt: string;
   favorite?: boolean;
+  audioUri?: string;
+  audioName?: string;
+  imageUri?: string;
+  imageName?: string;
 };
 
 export const GRATITUDE_STORAGE_KEY = "sukur-gunlugu.entries.v1";
@@ -22,6 +26,13 @@ export async function loadGratitudeEntries(): Promise<GratitudeEntry[]> {
         (entry): entry is GratitudeEntry =>
           Boolean(entry) && typeof entry.id === "string" && typeof entry.text === "string" && typeof entry.createdAt === "string",
       )
+      .map((entry) => ({
+        ...entry,
+        audioUri: typeof entry.audioUri === "string" ? entry.audioUri : undefined,
+        audioName: typeof entry.audioName === "string" ? entry.audioName : undefined,
+        imageUri: typeof entry.imageUri === "string" ? entry.imageUri : undefined,
+        imageName: typeof entry.imageName === "string" ? entry.imageName : undefined,
+      }))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   } catch {
     return [];
@@ -102,9 +113,9 @@ export function getMonthChart(entries: GratitudeEntry[], reference = new Date())
 export function getDayChart(entries: GratitudeEntry[], reference = new Date()) {
   const end = new Date(reference);
   end.setHours(0, 0, 0, 0);
-  return Array.from({ length: 6 }, (_, index) => {
+  return Array.from({ length: 7 }, (_, index) => {
     const date = new Date(end);
-    date.setDate(end.getDate() - (5 - index));
+    date.setDate(end.getDate() - (6 - index));
     return {
       label: date.toLocaleDateString("tr-TR", { day: "numeric", month: "short" }).replace(".", ""),
       value: getEntriesForDay(entries, date),

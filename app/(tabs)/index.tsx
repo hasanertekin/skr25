@@ -1,94 +1,444 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, FlatList, Image, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system/legacy";
+import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from "expo-audio";
+import * as ImagePicker from "expo-image-picker";
+import * as MediaLibrary from "expo-media-library";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { QuickGratitudeModal } from "@/components/quick-gratitude-modal";
 import { loadGratitudeEntries, saveGratitudeEntries, type GratitudeEntry } from "@/lib/gratitude";
 import { usePlayer } from "@/lib/player-context";
-import { getGoalProgress, loadDailyGoal } from "@/lib/daily-goal";
+import { loadDailyGoal } from "@/lib/daily-goal";
 import { loadPreferences } from "@/lib/app-preferences";
-import { PlaylistPicker } from "@/components/playlist-picker";
-import { ensureDefaultPlaylist, savePlaylists, type Playlist } from "@/lib/playlists";
+import { createLibraryId, ensureDefaultPlaylist, libraryItemsInFolder, loadPlaylistFolders, savePlaylists, type Playlist, type PlaylistFolder } from "@/lib/playlists";
 import { useThemeContext } from "@/lib/theme-provider";
+import { PlaylistPicker } from "@/components/playlist-picker";
+import { motivationalQuotes } from "@/lib/motivational-quotes";
+import { deleteManagedFile, persistImageAsset, persistPickedFile } from "@/lib/local-files";
+import { NowPlayingIndicator } from "@/components/now-playing-indicator";
+import { withPrivacyLockExemption } from "@/lib/privacy-lock-exemption";
 
 function formatEntryTime(date: Date) {
   return date.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
 }
 
+function formatRecordingDuration(milliseconds: number) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 export default function HomeScreen() {
   const [entries, setEntries] = useState<GratitudeEntry[]>([]);
   const [draft, setDraft] = useState("");
+  const [audioDraft, setAudioDraft] = useState<{ uri: string; name: string } | null>(null);
+  const [recordingVisible, setRecordingVisible] = useState(false);
+  const [imageDraft, setImageDraft] = useState<{ uri: string; name: string } | null>(null);
+  const [imagePreviewUri, setImagePreviewUri] = useState<string | null>(null);
+  const [photoPickerOpen, setPhotoPickerOpen] = useState(false);
+  const [photoAssets, setPhotoAssets] = useState<MediaLibrary.Asset[]>([]);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [photoHasNext, setPhotoHasNext] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [quickVisible, setQuickVisible] = useState(false);
-  const router = useRouter();
-  const { playEntries, currentIndex, isPlaying, entries: playingEntries } = usePlayer();
-  const inputRef = useRef<TextInput>(null);
   const [dailyGoal, setDailyGoal] = useState(5);
+  const [hapticsOnSave, setHapticsOnSave] = useState(true);
   const [playlistPickerOpen, setPlaylistPickerOpen] = useState(false);
   const [pickerEntry, setPickerEntry] = useState<GratitudeEntry | null>(null);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [playlistFolders, setPlaylistFolders] = useState<PlaylistFolder[]>([]);
+  const [actionEntry, setActionEntry] = useState<GratitudeEntry | null>(null);
+  const [editingEntry, setEditingEntry] = useState<GratitudeEntry | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
   const [entrySort, setEntrySort] = useState<"newest" | "oldest">("newest");
+  const [quoteIndex, setQuoteIndex] = useState(() => Math.floor(Math.random() * motivationalQuotes.length));
+  const saveLockRef = useRef(false);
+  const recordingActionRef = useRef(false);
+  const photoCursorRef = useRef<string | null>(null);
+  const photoLoadLockRef = useRef(false);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder, 250);
+  const router = useRouter();
+  const { playEntries, currentIndex, isPlaying, entries: playingEntries, pauseForRecording, removeQueueEntry, updateQueueEntry, settings: listeningSettings } = usePlayer();
+  const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<GratitudeEntry>>(null);
   const { palette } = useThemeContext();
-  const colors = useMemo(() => ({ background: palette.background, surface: palette.surface, ink: palette.foreground, muted: palette.muted, border: palette.border, primary: palette.primary, primaryDark: palette.foreground, primarySoft: palette.border, orange: palette.warning, orangeSoft: palette.border }), [palette]);
+  const colors = useMemo(() => ({
+    background: palette.background,
+    surface: palette.surface,
+    ink: palette.foreground,
+    muted: palette.muted,
+    border: palette.border,
+    primary: palette.primary,
+    soft: palette.soft,
+    onPrimary: palette.onPrimary,
+    warning: palette.warning,
+    error: palette.error,
+  }), [palette]);
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   const refreshEntries = useCallback(async () => {
     setRefreshing(true);
-    const [loadedEntries, preferences, loadedPlaylists] = await Promise.all([loadGratitudeEntries(), loadPreferences(), ensureDefaultPlaylist()]);
-    setEntrySort(preferences.entrySort);
-    setEntries(preferences.entrySort === "oldest" ? [...loadedEntries].reverse() : loadedEntries);
-    setPlaylists(loadedPlaylists);
-    setRefreshing(false);
+    try {
+      const [loadedEntries, preferences, loadedPlaylists, loadedGoal, loadedFolders] = await Promise.all([
+        loadGratitudeEntries(),
+        loadPreferences(),
+        ensureDefaultPlaylist(),
+        loadDailyGoal(),
+        loadPlaylistFolders(),
+      ]);
+      setEntrySort(preferences.entrySort);
+      setHapticsOnSave(preferences.hapticsOnSave);
+      setEntries(preferences.entrySort === "oldest" ? [...loadedEntries].reverse() : loadedEntries);
+      setPlaylists(loadedPlaylists);
+      setPlaylistFolders(loadedFolders);
+      setDailyGoal(loadedGoal);
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshEntries();
-    }, [refreshEntries]),
-  );
+  useFocusEffect(useCallback(() => { void refreshEntries(); }, [refreshEntries]));
 
-  useFocusEffect(useCallback(() => { loadDailyGoal().then(setDailyGoal); }, []));
+  const todayEntries = useMemo(() => {
+    const now = new Date();
+    return entries.filter((entry) => {
+      const date = new Date(entry.createdAt);
+      return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    });
+  }, [entries]);
 
+  useEffect(() => {
+    if (!isPlaying || playingEntries.length === 0) return;
+    const activeId = playingEntries[currentIndex]?.id;
+    const activeIndex = todayEntries.findIndex((entry) => entry.id === activeId);
+    if (activeIndex >= 0) listRef.current?.scrollToIndex({ index: activeIndex, animated: true, viewPosition: 0.5 });
+  }, [currentIndex, isPlaying, playingEntries, todayEntries]);
+
+  const restorePlaybackAudioMode = async () => {
+    await setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: false,
+      shouldPlayInBackground: listeningSettings.backgroundPlayback,
+      interruptionMode: "doNotMix",
+    }).catch(() => undefined);
+  };
+
+  const beginVoiceRecording = async () => {
+    if (recordingActionRef.current || isSaving) return;
+    recordingActionRef.current = true;
+    try {
+      const permission = await withPrivacyLockExemption(() => AudioModule.requestRecordingPermissionsAsync());
+      if (!permission.granted) {
+        Alert.alert("Mikrofon izni gerekli", "Şükran notuna kendi sesini kaydetmek için mikrofon izni vermen gerekir.");
+        return;
+      }
+      if (isPlaying) pauseForRecording();
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true, shouldPlayInBackground: listeningSettings.backgroundPlayback, interruptionMode: "mixWithOthers" });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setRecordingVisible(true);
+    } catch {
+      await restorePlaybackAudioMode();
+      Alert.alert("Kayıt başlatılamadı", "Mikrofon kullanılamadı. İzni ve cihaz mikrofonunu kontrol edip yeniden dene.");
+    } finally {
+      recordingActionRef.current = false;
+    }
+  };
+
+  const finishVoiceRecording = async () => {
+    if (recordingActionRef.current || !recorder.isRecording) return;
+    recordingActionRef.current = true;
+    try {
+      await recorder.stop();
+      const uri = recorder.uri;
+      await restorePlaybackAudioMode();
+      if (!uri) throw new Error("Recording URI is missing");
+      if (audioDraft && audioDraft.uri !== uri) await FileSystem.deleteAsync(audioDraft.uri, { idempotent: true }).catch(() => undefined);
+      setAudioDraft({ uri, name: `Ses kaydı · ${formatRecordingDuration(recorderState.durationMillis)}.m4a` });
+      setRecordingVisible(false);
+    } catch {
+      await restorePlaybackAudioMode();
+      Alert.alert("Kayıt tamamlanamadı", "Kaydedilen ses saklanamadı. Yeniden kayıt başlatabilirsin.");
+    } finally {
+      recordingActionRef.current = false;
+    }
+  };
+
+  const cancelVoiceRecording = async () => {
+    if (recordingActionRef.current) return;
+    recordingActionRef.current = true;
+    try {
+      if (recorder.isRecording) await recorder.stop();
+      const uri = recorder.uri;
+      if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+      setRecordingVisible(false);
+      await restorePlaybackAudioMode();
+    } finally {
+      recordingActionRef.current = false;
+    }
+  };
+
+  const removeAudioDraft = async () => {
+    if (audioDraft) await FileSystem.deleteAsync(audioDraft.uri, { idempotent: true }).catch(() => undefined);
+    setAudioDraft(null);
+  };
+
+  const loadPhotoPage = async (reset = false) => {
+    if (photoLoadLockRef.current) return;
+    photoLoadLockRef.current = true;
+    setPhotoLoading(true);
+    setPhotoError(null);
+    if (reset) {
+      photoCursorRef.current = null;
+      setPhotoAssets([]);
+      setPhotoHasNext(false);
+    }
+    try {
+      const permission = await withPrivacyLockExemption(() => MediaLibrary.requestPermissionsAsync(false, ["photo"]));
+      if (!permission.granted) {
+        setPhotoError("Fotoğraflarını gösterebilmem için fotoğraf erişim izni gerekiyor.");
+        return;
+      }
+      const page = await MediaLibrary.getAssetsAsync({
+        first: 48,
+        ...(reset || !photoCursorRef.current ? {} : { after: photoCursorRef.current }),
+        mediaType: MediaLibrary.MediaType.photo,
+        sortBy: [MediaLibrary.SortBy.creationTime],
+      });
+      photoCursorRef.current = page.endCursor || null;
+      setPhotoAssets((current) => reset ? page.assets : [...current, ...page.assets]);
+      setPhotoHasNext(page.hasNextPage);
+      if (page.totalCount === 0) setPhotoError("Fotoğraf kitaplığında henüz görsel yok.");
+    } catch {
+      setPhotoError("Fotoğraflar yüklenemedi. İzni kontrol edip yeniden deneyebilirsin.");
+    } finally {
+      photoLoadLockRef.current = false;
+      setPhotoLoading(false);
+    }
+  };
+
+  const chooseImage = async () => {
+    if (Platform.OS === "web") {
+      try {
+        const permission = await withPrivacyLockExemption(() => ImagePicker.requestMediaLibraryPermissionsAsync());
+        if (!permission.granted) return;
+        const result = await withPrivacyLockExemption(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1 }));
+        if (!result.canceled && result.assets[0]) setImageDraft({ uri: result.assets[0].uri, name: result.assets[0].fileName || "sukran-anisi.jpg" });
+      } catch {
+        Alert.alert("Fotoğraf eklenemedi", "Fotoğraf okunamadı. Başka bir görsel seçip yeniden deneyebilirsin.");
+      }
+      return;
+    }
+    photoCursorRef.current = null;
+    setPhotoAssets([]);
+    setPhotoPickerOpen(true);
+    void loadPhotoPage(true);
+  };
+
+  const selectPhoto = async (asset: MediaLibrary.Asset) => {
+    try {
+      const info = await MediaLibrary.getAssetInfoAsync(asset, { shouldDownloadFromNetwork: true });
+      const candidates = [...new Set([info.localUri, info.uri, asset.uri].filter((value): value is string => Boolean(value)))];
+      let storedUri: string | null = null;
+      let lastError: unknown;
+      for (const sourceUri of candidates) {
+        try {
+          storedUri = await persistImageAsset(sourceUri, asset.filename || "sukran-anisi.jpg", "gratitude-image-draft");
+          break;
+        } catch (error) { lastError = error; }
+      }
+      if (!storedUri) throw lastError ?? new Error("Fotoğraf URI’si çözümlenemedi.");
+      if (imageDraft) await deleteManagedFile(imageDraft.uri);
+      setImageDraft({ uri: storedUri, name: asset.filename || "Fotoğraf" });
+      setPhotoPickerOpen(false);
+    } catch (error) {
+      console.error("[gratitude-photo-import]", error);
+      setPhotoPickerOpen(false);
+      // Some Android providers expose a MediaLibrary URI that neither FileSystem nor the decoder
+      // can read. Hand off to the platform photo picker for a temporary, app-readable URI.
+      await chooseImageFromSystem();
+    }
+  };
+
+  const chooseImageFromSystem = async () => {
+    try {
+      const result = await withPrivacyLockExemption(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: false, quality: 1 }));
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const uri = await persistImageAsset(asset.uri, asset.fileName || "sukran-anisi.jpg", "gratitude-image-draft");
+      if (imageDraft) await deleteManagedFile(imageDraft.uri);
+      setImageDraft({ uri, name: asset.fileName || "Fotoğraf" });
+      setPhotoPickerOpen(false);
+    } catch (error) {
+      console.error("[gratitude-photo-system-picker]", error);
+      Alert.alert("Fotoğraf eklenemedi", "Fotoğraf seçilemedi veya uygulama alanına aktarılamadı. Başka bir görselle yeniden deneyebilirsin.");
+    }
+  };
+
+  const removeImageDraft = async () => {
+    if (imageDraft) await deleteManagedFile(imageDraft.uri);
+    setImageDraft(null);
+  };
 
   const addEntry = useCallback(async () => {
     const text = draft.trim();
-    if (!text || isSaving) return;
-
+    if ((!text && !audioDraft) || isSaving || saveLockRef.current) return;
+    saveLockRef.current = true;
     setIsSaving(true);
-    const nextEntry: GratitudeEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      text,
-      createdAt: new Date().toISOString(),
-    };
+    let storedAudioUri: string | undefined;
+    let storedImageUri: string | undefined;
+    try {
+      if (audioDraft) storedAudioUri = await persistPickedFile(audioDraft.uri, audioDraft.name, "gratitude-audio");
+      if (imageDraft) storedImageUri = imageDraft.uri.startsWith(FileSystem.documentDirectory ?? "\u0000")
+        ? imageDraft.uri
+        : await persistPickedFile(imageDraft.uri, imageDraft.name, "gratitude-image");
+      const nextEntry: GratitudeEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        text: text || "Ses kaydı",
+        createdAt: new Date().toISOString(),
+        ...(storedAudioUri ? { audioUri: storedAudioUri, audioName: audioDraft?.name } : {}),
+        ...(storedImageUri ? { imageUri: storedImageUri, imageName: imageDraft?.name } : {}),
+      };
+      const nextEntries = entrySort === "oldest" ? [...entries, nextEntry] : [nextEntry, ...entries];
+      await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
+      setEntries(nextEntries);
+      setDraft("");
+      if (audioDraft) await FileSystem.deleteAsync(audioDraft.uri, { idempotent: true }).catch(() => undefined);
+      setAudioDraft(null);
+      setImageDraft(null);
+      if (Platform.OS !== "web" && hapticsOnSave) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      if (storedAudioUri) await deleteManagedFile(storedAudioUri);
+      if (storedImageUri && storedImageUri !== imageDraft?.uri) await deleteManagedFile(storedImageUri);
+      Alert.alert("Kaydedilemedi", "Notun bu kez saklanamadı. Metnin ve eklerin duruyor; yeniden deneyebilirsin.");
+    } finally {
+      saveLockRef.current = false;
+      setIsSaving(false);
+      if (text) requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [audioDraft, draft, entries, entrySort, hapticsOnSave, imageDraft, isSaving]);
+
+  const saveQuickEntry = async (text: string) => {
+    if (saveLockRef.current) {
+      Alert.alert("Bir kayıt sürüyor", "Bu kayıt tamamlanınca hızlı notunu yeniden kaydedebilirsin.");
+      throw new Error("A gratitude save is already in progress.");
+    }
+    saveLockRef.current = true;
+    setIsSaving(true);
+    const nextEntry: GratitudeEntry = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, createdAt: new Date().toISOString() };
     const nextEntries = entrySort === "oldest" ? [...entries, nextEntry] : [nextEntry, ...entries];
     setEntries(nextEntries);
-    setDraft("");
-    inputRef.current?.focus();
     try {
       await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
-      if (Platform.OS !== "web") {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
+      if (Platform.OS !== "web" && hapticsOnSave) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      setEntries(entries);
+      Alert.alert("Kaydedilemedi", "Hızlı not saklanamadı. Lütfen yeniden dene.");
+      throw error;
     } finally {
+      saveLockRef.current = false;
       setIsSaving(false);
     }
-  }, [draft, entries, entrySort, isSaving]);
+  };
 
-  const openPlaylistPicker = async (entry: GratitudeEntry) => { setPlaylists(await ensureDefaultPlaylist()); setPickerEntry(entry); setPlaylistPickerOpen(true); };
-  const addToPlaylist = async (playlist: Playlist) => { if (!pickerEntry) return; const nextEntries = entries.map((entry) => entry.id === pickerEntry.id ? { ...entry, favorite: true } : entry); const nextLists = playlists.map((item) => item.id === playlist.id ? { ...item, entryIds: item.entryIds.includes(pickerEntry.id) ? item.entryIds : [...item.entryIds, pickerEntry.id] } : item); setEntries(nextEntries); setPlaylists(nextLists); await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries); await savePlaylists(nextLists); setPlaylistPickerOpen(false); };
-  const createPlaylistForEntry = async (name: string) => { if (!pickerEntry) return; const created = { id: `playlist-${Date.now()}`, name, entryIds: [pickerEntry.id], createdAt: new Date().toISOString() }; const nextEntries = entries.map((entry) => entry.id === pickerEntry.id ? { ...entry, favorite: true } : entry); const nextLists = [...playlists, created]; setEntries(nextEntries); setPlaylists(nextLists); await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries); await savePlaylists(nextLists); setPlaylistPickerOpen(false); };
+  const openPlaylistPicker = async (entry: GratitudeEntry) => {
+    const [loadedPlaylists, loadedFolders] = await Promise.all([ensureDefaultPlaylist(), loadPlaylistFolders()]);
+    setPlaylists(loadedPlaylists);
+    setPlaylistFolders(loadedFolders);
+    setPickerEntry(entry);
+    setPlaylistPickerOpen(true);
+  };
 
-  const todayEntries = entries.filter((entry) => {
-    const now = new Date();
-    const date = new Date(entry.createdAt);
-    return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  });
-  useEffect(() => { if (!isPlaying || playingEntries.length === 0) return; const activeId = playingEntries[currentIndex]?.id; const activeIndex = todayEntries.findIndex((entry) => entry.id === activeId); if (activeIndex >= 0) listRef.current?.scrollToIndex({ index: activeIndex, animated: true, viewPosition: 0.5 }); }, [currentIndex, isPlaying, playingEntries, todayEntries]);
+  const addToPlaylist = async (playlist: Playlist) => {
+    if (!pickerEntry) return;
+    const nextEntries = entries.map((entry) => entry.id === pickerEntry.id ? { ...entry, favorite: true } : entry);
+    const nextPlaylists = playlists.map((item) => item.id === playlist.id
+      ? { ...item, entryIds: item.entryIds.includes(pickerEntry.id) ? item.entryIds : [...item.entryIds, pickerEntry.id] }
+      : item);
+    setEntries(nextEntries);
+    setPlaylists(nextPlaylists);
+    await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
+    await savePlaylists(nextPlaylists);
+    setPlaylistPickerOpen(false);
+  };
+
+  const createPlaylistForEntry = async (name: string, folderId: string | null) => {
+    if (!pickerEntry) return;
+    const created: Playlist = { id: createLibraryId("playlist"), name, entryIds: [pickerEntry.id], createdAt: new Date().toISOString(), folderId, sortOrder: libraryItemsInFolder(playlists, playlistFolders, folderId).length };
+    const nextEntries = entries.map((entry) => entry.id === pickerEntry.id ? { ...entry, favorite: true } : entry);
+    const nextPlaylists = [...playlists, created];
+    setEntries(nextEntries);
+    setPlaylists(nextPlaylists);
+    await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
+    await savePlaylists(nextPlaylists);
+    setPlaylistPickerOpen(false);
+  };
+
+  const startEditEntry = (entry: GratitudeEntry) => {
+    setActionEntry(null);
+    setEditingEntry(entry);
+    setEditDraft(entry.text);
+  };
+
+  const saveEntryEdit = async () => {
+    if (!editingEntry || !editDraft.trim() || savingEdit) return;
+    setSavingEdit(true);
+    try {
+      const latest = await loadGratitudeEntries();
+      const updatedEntry = { ...editingEntry, text: editDraft.trim() };
+      const next = latest.map((entry) => entry.id === editingEntry.id ? updatedEntry : entry);
+      await saveGratitudeEntries(next);
+      setEntries(entrySort === "oldest" ? [...next].reverse() : next);
+      updateQueueEntry(updatedEntry);
+      setEditingEntry(null);
+    } catch {
+      Alert.alert("Düzenlenemedi", "Notun korunuyor. Biraz sonra yeniden deneyebilirsin.");
+    } finally { setSavingEdit(false); }
+  };
+
+  const deleteEntry = (entry: GratitudeEntry) => Alert.alert("Notu sil", "Bu not günlüğünden ve tüm listelerinden kaldırılacak.", [
+    { text: "Vazgeç", style: "cancel" },
+    { text: "Sil", style: "destructive", onPress: () => { void (async () => {
+      try {
+        const [latestEntries, latestPlaylists] = await Promise.all([loadGratitudeEntries(), ensureDefaultPlaylist()]);
+        const nextEntries = latestEntries.filter((item) => item.id !== entry.id);
+        const nextPlaylists = latestPlaylists.map((playlist) => ({ ...playlist, entryIds: playlist.entryIds.filter((id) => id !== entry.id) }));
+        await Promise.all([saveGratitudeEntries(nextEntries), savePlaylists(nextPlaylists)]);
+        setEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
+        setPlaylists(nextPlaylists);
+        const queueIndex = playingEntries.findIndex((item) => item.id === entry.id);
+        if (queueIndex >= 0) removeQueueEntry(queueIndex);
+        await Promise.all([deleteManagedFile(entry.audioUri), deleteManagedFile(entry.imageUri)]);
+      } catch { Alert.alert("Silinemedi", "Notun ve listelerin korunuyor. Biraz sonra yeniden dene."); }
+    })(); } },
+  ]);
+
+  const runEntryAction = (action: "edit" | "list" | "delete") => {
+    const entry = actionEntry;
+    if (!entry) return;
+    setActionEntry(null);
+    if (action === "edit") startEditEntry(entry);
+    else if (action === "list") void openPlaylistPicker(entry);
+    else deleteEntry(entry);
+  };
+
+  const showRandomQuote = useCallback(() => {
+    setQuoteIndex((current) => {
+      if (motivationalQuotes.length < 2) return current;
+      const next = Math.floor(Math.random() * (motivationalQuotes.length - 1));
+      return next >= current ? next + 1 : next;
+    });
+  }, []);
+
+  const goalComplete = todayEntries.length >= dailyGoal;
+  const goalPercent = dailyGoal > 0 ? Math.round((todayEntries.length / dailyGoal) * 100) : 0;
 
   return (
     <ScreenContainer>
@@ -104,67 +454,121 @@ export default function HomeScreen() {
           ListHeaderComponent={
             <View>
               <View style={styles.header}>
-                <View>
-                  <View style={styles.brandRow}>
-                    <View style={styles.brandMark}>
-                      <Ionicons name="leaf" size={14} color={colors.surface} />
-                    </View>
-                    <Text style={styles.brandText}>ŞÜKÜR GÜNLÜĞÜ</Text>
-                  </View>
+                <View style={styles.brandRow}>
+                  <View style={styles.brandMark}><Ionicons name="leaf-outline" size={17} color={colors.primary} /></View>
+                  <Text style={styles.brandText}>ŞÜKRAN GÜNLÜĞÜ</Text>
                 </View>
-                <View style={styles.topActions}>
-                  <Pressable onPress={() => setQuickVisible(true)} style={({ pressed }) => [styles.roundButton, styles.roundButtonFilled, pressed && styles.pressed]} accessibilityLabel="Hızlı şükran yaz"><Ionicons name="flash-outline" size={18} color={colors.surface} /></Pressable>
-                  <Pressable onPress={() => router.push("/settings")} style={({ pressed }) => [styles.roundButton, pressed && styles.pressed]} accessibilityLabel="Ayarlar"><Ionicons name="settings-outline" size={18} color={colors.primary} /></Pressable>
+                <View style={styles.headerActions}>
+                  <Pressable
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setTimeout(() => setQuickVisible(true), Platform.OS === "android" ? 100 : 0);
+                    }}
+                    style={({ pressed }) => [styles.quickButton, pressed && styles.pressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Hızlı şükran yaz"
+                    hitSlop={6}
+                  >
+                    <Ionicons name="flash-outline" size={18} color={colors.onPrimary} />
+                  </Pressable>
+                  <Pressable
+                    onPress={() => router.push("/settings")}
+                    style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Ayarları aç"
+                    hitSlop={6}
+                  >
+                    <Ionicons name="settings-outline" size={19} color={colors.primary} />
+                  </Pressable>
                 </View>
               </View>
 
-              <PlaylistPicker visible={playlistPickerOpen} playlists={playlists} onClose={() => setPlaylistPickerOpen(false)} onSelect={addToPlaylist} onCreate={createPlaylistForEntry} />
-              <QuickGratitudeModal visible={quickVisible} onClose={() => setQuickVisible(false)} onSave={async (text) => {
-                const nextEntry: GratitudeEntry = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, createdAt: new Date().toISOString() };
-                const nextEntries = entrySort === "oldest" ? [...entries, nextEntry] : [nextEntry, ...entries];
-                setEntries(nextEntries);
-                await saveGratitudeEntries(entrySort === "oldest" ? [...nextEntries].reverse() : nextEntries);
-              }} />
-
-              <View style={styles.goalCard}><View style={styles.goalHeader}><View style={styles.goalIcon}><Ionicons name={todayEntries.length >= dailyGoal ? "checkmark-circle-outline" : "locate-outline"} size={19} color={colors.primary} /></View><View style={styles.goalCopy}><Text style={styles.goalTitle}>Bugünün hedefi</Text><Text style={styles.goalText}>{todayEntries.length >= dailyGoal ? `Hedefini tamamladın. ${todayEntries.length} şükran kaydettin; istersen devam edebilirsin.` : `${dailyGoal - todayEntries.length} şükran daha eklediğinde hedefin tamamlanacak.`}</Text></View></View><View style={styles.goalTrack}><View style={[styles.goalFill, { width: `${Math.min(100, (getGoalProgress(todayEntries.length, dailyGoal)) * 100)}%` }]} />{todayEntries.length > dailyGoal ? <View style={[styles.goalOverflow, { width: `${((todayEntries.length - dailyGoal) / todayEntries.length) * 100}%` }]} /> : null}{todayEntries.length > dailyGoal ? <View style={[styles.goalMarker, { left: `${(dailyGoal / todayEntries.length) * 100}%` }]} /> : null}</View><Text style={styles.goalStatus}>{todayEntries.length > dailyGoal ? `Hedefinin %${Math.round((todayEntries.length / dailyGoal - 1) * 100)} üzerindesin` : todayEntries.length === dailyGoal ? "Hedef tamamlandı" : `${todayEntries.length}/${dailyGoal} şükran`}</Text></View>
+              <View style={styles.goalCard}>
+                <View style={styles.goalHeader}>
+                  <View style={styles.goalIcon}><Ionicons name={goalComplete ? "checkmark-circle-outline" : "locate-outline"} size={18} color={colors.primary} /></View>
+                  <View style={styles.goalCopy}>
+                    <Text style={styles.goalTitle}>Günlük hedef</Text>
+                    <Text style={styles.goalText}>
+                      {goalComplete
+                        ? `Bugün ${todayEntries.length} not bıraktın. Dilersen devam edebilirsin.`
+                        : `İstersen bugün ${Math.max(0, dailyGoal - todayEntries.length)} not daha ekleyebilirsin.`}
+                    </Text>
+                  </View>
+                  <Pressable onPress={() => router.push({ pathname: "/settings", params: { section: "goal" } })} style={styles.goalEdit} accessibilityRole="button" accessibilityLabel="Günlük hedef ayarlarına git" hitSlop={6}>
+                    <Ionicons name="settings-outline" size={17} color={colors.primary} />
+                  </Pressable>
+                </View>
+                <View style={styles.goalTrack}>
+                  <View style={[styles.goalFill, { width: `${Math.min(goalPercent, 100)}%` }]} />
+                  {todayEntries.length > dailyGoal ? <View style={[styles.goalOverflow, { width: `${((todayEntries.length - dailyGoal) / todayEntries.length) * 100}%` }]} /> : null}
+                  {todayEntries.length > dailyGoal ? <View style={[styles.goalMarker, { left: `${(dailyGoal / todayEntries.length) * 100}%` }]} /> : null}
+                </View>
+                <Text style={styles.goalStatus}>
+                  {todayEntries.length}/{dailyGoal} · %{goalPercent}{todayEntries.length > dailyGoal ? ` · hedefin %${goalPercent - 100} üstünde` : ""}
+                </Text>
+              </View>
 
               <View style={styles.composerCard}>
                 <TextInput
+                  ref={inputRef}
                   value={draft}
                   onChangeText={setDraft}
                   multiline
-                  ref={inputRef}
                   placeholder="Bugün şükrettiğim şey..."
                   placeholderTextColor={colors.muted}
                   style={styles.input}
                   textAlignVertical="top"
                   blurOnSubmit={false}
-                  returnKeyType="done"
+                  returnKeyType="default"
+                  accessibilityLabel="Bugün için şükür notun"
                 />
+                {audioDraft ? (
+                  <View style={styles.attachmentChip}>
+                    <Ionicons name="volume-high-outline" size={16} color={colors.primary} />
+                    <Text numberOfLines={1} style={styles.attachmentName}>{audioDraft.name}</Text>
+                    <Pressable onPress={() => void removeAudioDraft()} style={styles.attachmentRemove} accessibilityRole="button" accessibilityLabel="Kaydedilen sesi kaldır"><Ionicons name="close" size={17} color={colors.muted} /></Pressable>
+                  </View>
+                ) : null}
+                {imageDraft ? (
+                  <View style={styles.imageDraftWrap}>
+                    <Pressable onPress={() => setImagePreviewUri(imageDraft.uri)} accessibilityRole="button" accessibilityLabel="Ekli fotoğrafı büyüt">
+                      <Image source={{ uri: imageDraft.uri }} style={styles.imageDraft} resizeMode="contain" />
+                    </Pressable>
+                    <Pressable onPress={() => void removeImageDraft()} style={styles.imageRemove} accessibilityRole="button" accessibilityLabel="Ekli fotoğrafı kaldır"><Ionicons name="close" size={17} color="#FFFFFF" /></Pressable>
+                  </View>
+                ) : null}
                 <View style={styles.composerFooter}>
+                  <View style={styles.attachmentActions}>
+                    <Pressable onPress={() => void beginVoiceRecording()} disabled={isSaving || recorderState.isRecording} style={({ pressed }) => [styles.attachmentIconButton, (isSaving || recorderState.isRecording) && styles.disabled, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={audioDraft ? "Ses kaydını yeniden yap" : "Kendi sesini kaydet"} hitSlop={4}>
+                      <Ionicons name="mic-outline" size={20} color={colors.primary} />
+                    </Pressable>
+                    <Pressable onPress={() => void chooseImage()} style={({ pressed }) => [styles.attachmentIconButton, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Şükür notuna fotoğraf ekle" hitSlop={4}>
+                      <Ionicons name="image-outline" size={20} color={colors.primary} />
+                    </Pressable>
+                  </View>
                   <Pressable
                     onPress={addEntry}
+                    disabled={(!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording}
                     accessibilityRole="button"
-                    accessibilityLabel="Şükür maddesi ekle"
-                    style={({ pressed }) => [styles.addButton, pressed && styles.pressed, (!draft.trim() || isSaving) && styles.addButtonDisabled]}
+                    accessibilityLabel={draft.trim() ? "Notu kaydet" : "Ses kaydını kaydet"}
+                    accessibilityState={{ disabled: (!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording }}
+                    style={({ pressed }) => [styles.addButton, ((!draft.trim() && !audioDraft) || isSaving || recorderState.isRecording) && styles.addButtonDisabled, pressed && styles.pressed]}
                   >
-                    <Text style={styles.addButtonText}>{isSaving ? "Ekleniyor" : "Ekle"}</Text>
-                    <Ionicons name="arrow-forward" size={16} color={colors.surface} />
+                    <Text style={styles.addButtonText}>{isSaving ? "Kaydediliyor" : recorderState.isRecording ? "Önce kaydı bitir" : "Kaydet"}</Text>
+                    <Ionicons name="arrow-forward" size={16} color={colors.onPrimary} />
                   </Pressable>
                 </View>
               </View>
 
-
-
               <View style={styles.listHeader}>
-                <View>
-                  <Text style={styles.sectionTitle}>Şükürlerin</Text>
-                </View>
+                <Text style={styles.sectionTitle}>Şükürlerin</Text>
                 <View style={styles.listHeaderActions}>
-                  <Pressable onPress={() => playEntries(todayEntries)} disabled={todayEntries.length === 0} style={({ pressed }) => [styles.listenTodayButton, pressed && styles.pressed, todayEntries.length === 0 && styles.listenTodayDisabled]} accessibilityLabel="Bugünün şükürlerini dinle">
-                    <Ionicons name="volume-high-outline" size={15} color={colors.primary} />
-                    <Text style={styles.listenTodayText}>Dinle</Text>
-                  </Pressable>
+                  {todayEntries.length > 0 ? (
+                    <Pressable onPress={() => playEntries(todayEntries, 0, undefined, "Bugün")} style={({ pressed }) => [styles.listenButton, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Bugünkü notları dinle">
+                      <Ionicons name="volume-high-outline" size={17} color={colors.primary} />
+                      <Text style={styles.listenText}>Tümünü Dinle</Text>
+                    </Pressable>
+                  ) : null}
                   <View style={styles.totalPill}><Text style={styles.totalPillText}>{todayEntries.length}</Text></View>
                 </View>
               </View>
@@ -172,113 +576,275 @@ export default function HomeScreen() {
           }
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <View style={styles.emptyIcon}>
-                <Ionicons name="leaf-outline" size={26} color={colors.primary} />
-              </View>
-              <Text style={styles.emptyTitle}>Sayfan henüz boş</Text>
-              <Text style={styles.emptyText}>Aklına gelen güzel bir şeyi yukarıya yaz. Her madde, kendine verdiğin küçük bir hediye.</Text>
+              <View style={styles.emptyIcon}><Ionicons name="leaf-outline" size={25} color={colors.primary} /></View>
+              <Text style={styles.emptyTitle}>Bugün sayfan boş</Text>
+              <Text style={styles.emptyText}>Hazır olduğunda, burada saklamak istediğin bir anı yazabilirsin.</Text>
             </View>
           }
-          renderItem={({ item, index }) => (
-            <View style={styles.entryCard}>
-              <View style={[styles.entryNumber, index === 0 && styles.entryNumberHighlight]}>
-                <Text style={[styles.entryNumberText, index === 0 && styles.entryNumberTextHighlight]}>{String(todayEntries.length - index).padStart(2, "0")}</Text>
-              </View>
-              <View style={styles.entryCopy}>
-                <Text style={styles.entryText}>{item.text}</Text>
-                <View style={styles.entryMeta}>
-                  <Text style={styles.entryMetaText}>{formatEntryTime(new Date(item.createdAt))}</Text>
+          ListFooterComponent={
+            <View style={styles.quoteCard}>
+              <Text style={styles.quoteText} accessibilityLiveRegion="polite">{motivationalQuotes[quoteIndex]}</Text>
+              <Pressable
+                onPress={showRandomQuote}
+                style={({ pressed }) => [styles.quoteButton, pressed && styles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Rastgele başka bir söz göster"
+                hitSlop={5}
+              >
+                <Ionicons name="shuffle-outline" size={19} color={colors.primary} />
+              </Pressable>
+            </View>
+          }
+          renderItem={({ item, index }) => {
+            const isNowPlaying = isPlaying && playingEntries[currentIndex]?.id === item.id;
+            return (
+              <View style={[styles.entryCard, isNowPlaying && styles.entryCardPlaying]}>
+                <View style={styles.entryIndexColumn}>
+                  <Pressable
+                    onPress={() => playEntries(todayEntries, index, undefined, "Bugün")}
+                    style={({ pressed }) => [styles.entryAction, pressed && styles.pressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Bu kayıttan oynat"
+                    hitSlop={4}
+                  >
+                    <Ionicons name="play" size={15} color={colors.primary} />
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setActionEntry(item)}
+                    style={({ pressed }) => [styles.entryAction, pressed && styles.pressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Düzenle, listelere ekle veya sil"
+                    hitSlop={4}
+                  >
+                    <Ionicons name="ellipsis-horizontal" size={17} color={colors.muted} />
+                  </Pressable>
+                </View>
+                <View style={styles.entryCopy}>
+                  <Text style={styles.entryText}>{item.text}</Text>
+                  {item.imageUri ? <Pressable onPress={() => setImagePreviewUri(item.imageUri ?? null)} accessibilityRole="button" accessibilityLabel="Notun fotoğrafını büyüt"><Image source={{ uri: item.imageUri }} style={styles.entryImage} resizeMode="contain" /></Pressable> : null}
+                  {item.audioName ? <View style={styles.entryAttachment}><Ionicons name="musical-note-outline" size={13} color={colors.muted} /><Text numberOfLines={1} style={styles.entryAttachmentText}>{item.audioName}</Text></View> : null}
+                  {isNowPlaying ? <View style={styles.nowPlayingRow}><NowPlayingIndicator color={colors.primary} /><Text style={styles.nowPlayingLabel}>Şimdi çalıyor</Text></View> : null}
+                  <Text style={styles.entryMeta}>{formatEntryTime(new Date(item.createdAt))}</Text>
                 </View>
               </View>
-              <Pressable onPress={() => playEntries(todayEntries, index)} style={styles.numberPlay} accessibilityLabel="Bu kayıttan oynat"><Ionicons name="play" size={20} color={colors.primary} /></Pressable>
-              <Pressable onPress={() => openPlaylistPicker(item)} accessibilityLabel="Playlist’e ekle"><Ionicons name={playlists.some((playlist) => playlist.entryIds.includes(item.id)) ? "star" : "star-outline"} size={20} color={playlists.some((playlist) => playlist.entryIds.includes(item.id)) ? colors.orange : colors.muted} /></Pressable>
-            </View>
-          )}
+            );
+          }}
         />
+        <Modal visible={Boolean(actionEntry)} transparent animationType="fade" onRequestClose={() => setActionEntry(null)}>
+          <View style={styles.entryMenuBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setActionEntry(null)} accessibilityLabel="Kayıt menüsünü kapat" />
+            <View style={styles.entryMenuCard}>
+              <Text style={styles.entryMenuEyebrow}>KAYIT İŞLEMLERİ</Text>
+              <Text style={styles.entryMenuPreview} numberOfLines={2}>{actionEntry?.text}</Text>
+              <View style={styles.entryMenuRow}>
+                <Pressable onPress={() => runEntryAction("edit")} style={styles.entryMenuOption} accessibilityRole="button" accessibilityLabel="Notu düzenle">
+                  <Ionicons name="pencil-outline" size={20} color={colors.primary} /><Text style={styles.entryMenuText}>Düzenle</Text>
+                </Pressable>
+                <Pressable onPress={() => runEntryAction("list")} style={styles.entryMenuOption} accessibilityRole="button" accessibilityLabel="Listelere ekle">
+                  <Ionicons name="bookmark-outline" size={20} color={colors.primary} /><Text style={styles.entryMenuText}>Listelere ekle</Text>
+                </Pressable>
+                <Pressable onPress={() => runEntryAction("delete")} style={[styles.entryMenuOption, styles.entryMenuDanger]} accessibilityRole="button" accessibilityLabel="Notu sil">
+                  <Ionicons name="trash-outline" size={20} color={colors.error} /><Text style={[styles.entryMenuText, styles.entryMenuDangerText]}>Sil</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={Boolean(editingEntry)} transparent animationType="fade" onRequestClose={() => setEditingEntry(null)}>
+          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.entryEditBackdrop}>
+            <View style={styles.entryEditCard}>
+              <Text style={styles.entryMenuEyebrow}>NOTUNU DÜZENLE</Text>
+              <Text style={styles.entryEditTitle}>Kelimelerini gözden geçir</Text>
+              <TextInput value={editDraft} onChangeText={setEditDraft} multiline autoFocus style={styles.entryEditInput} textAlignVertical="top" accessibilityLabel="Şükran metnini düzenle" />
+              <View style={styles.entryEditActions}>
+                <Pressable onPress={() => setEditingEntry(null)} style={styles.entryEditCancel}><Text style={styles.entryEditCancelText}>Vazgeç</Text></Pressable>
+                <Pressable onPress={() => void saveEntryEdit()} disabled={!editDraft.trim() || savingEdit} style={[styles.entryEditSave, (!editDraft.trim() || savingEdit) && styles.disabled]}><Text style={styles.entryEditSaveText}>{savingEdit ? "Kaydediliyor" : "Kaydet"}</Text></Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+        <Modal visible={Boolean(imagePreviewUri)} transparent animationType="fade" onRequestClose={() => setImagePreviewUri(null)}>
+          <Pressable style={styles.imagePreviewBackdrop} onPress={() => setImagePreviewUri(null)} accessibilityLabel="Fotoğraf önizlemesini kapat">
+            {imagePreviewUri ? <Image source={{ uri: imagePreviewUri }} style={styles.imagePreview} resizeMode="contain" /> : null}
+            <View style={styles.imagePreviewClose}><Ionicons name="close" size={22} color="#FFFFFF" /></View>
+          </Pressable>
+        </Modal>
+        <Modal visible={photoPickerOpen} transparent animationType="slide" onRequestClose={() => setPhotoPickerOpen(false)}>
+          <View style={styles.galleryBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setPhotoPickerOpen(false)} accessibilityLabel="Fotoğraf galerisini kapat" />
+            <View style={styles.gallerySheet}>
+              <View style={styles.galleryHeader}>
+                <View style={styles.galleryHeading}>
+                  <Text style={styles.galleryTitle}>Bir fotoğraf seç</Text>
+                  <Text style={styles.galleryHint}>Fotoğraf kırpılmadan eklenecek.</Text>
+                </View>
+                <Pressable onPress={() => setPhotoPickerOpen(false)} style={styles.galleryClose} accessibilityRole="button" accessibilityLabel="Galeriyi kapat"><Ionicons name="close" size={20} color={colors.ink} /></Pressable>
+              </View>
+              {photoError ? (
+                <View style={styles.galleryMessage}>
+                  <Ionicons name={photoAssets.length ? "information-circle-outline" : "images-outline"} size={25} color={colors.primary} />
+                  <Text style={styles.galleryMessageText}>{photoError}</Text>
+                  {!photoAssets.length ? <Pressable onPress={() => void loadPhotoPage(true)} style={styles.galleryRetry}><Text style={styles.galleryRetryText}>Yeniden dene</Text></Pressable> : null}
+                </View>
+              ) : null}
+              <FlatList
+                data={photoAssets}
+                keyExtractor={(asset) => asset.id}
+                numColumns={3}
+                columnWrapperStyle={styles.galleryRow}
+                contentContainerStyle={styles.galleryGrid}
+                showsVerticalScrollIndicator={false}
+                onEndReached={() => { if (photoHasNext && !photoLoading) void loadPhotoPage(false); }}
+                onEndReachedThreshold={0.45}
+                initialNumToRender={24}
+                maxToRenderPerBatch={24}
+                windowSize={7}
+                renderItem={({ item }) => (
+                  <Pressable onPress={() => void selectPhoto(item)} style={({ pressed }) => [styles.galleryTile, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={`${item.filename} fotoğrafını seç`}>
+                    <Image source={{ uri: item.uri }} style={styles.galleryThumb} resizeMode="cover" />
+                  </Pressable>
+                )}
+                ListEmptyComponent={photoLoading ? <Text style={styles.galleryEmpty}>Fotoğraflar yükleniyor…</Text> : photoError ? null : <Text style={styles.galleryEmpty}>Fotoğraf bulunamadı.</Text>}
+                ListFooterComponent={photoLoading && photoAssets.length > 0 ? <Text style={styles.galleryEmpty}>Diğer fotoğraflar yükleniyor…</Text> : photoHasNext ? <Text style={styles.galleryEmpty}>Daha fazla görmek için aşağı kaydır.</Text> : null}
+              />
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={recordingVisible} transparent animationType="fade" onRequestClose={() => void cancelVoiceRecording()}>
+          <View style={styles.recordingBackdrop}>
+            <View style={styles.recordingCard}>
+              <View style={styles.recordingIcon}><Ionicons name={recorderState.isRecording ? "mic" : "mic-outline"} size={22} color={recorderState.isRecording ? colors.error : colors.primary} /></View>
+              <Text style={styles.recordingTitle}>{recorderState.isRecording ? "Sesin kaydediliyor" : "Kayıt tamamlandı"}</Text>
+              <Text style={styles.recordingHint}>{recorderState.isRecording ? "Hazır olduğunda kaydı bitir. Yalnızca kendi sesin bu nota eklenir." : "Kaydı notuna ekleyebilirsin; istersen yeniden kaydedebilirsin."}</Text>
+              <Text style={styles.recordingTimer}>{formatRecordingDuration(recorderState.durationMillis)}</Text>
+              <Pressable onPress={() => recorderState.isRecording ? void finishVoiceRecording() : setRecordingVisible(false)} style={[styles.recordingPrimary, recorderState.isRecording && styles.recordingStop]} accessibilityRole="button">
+                <Ionicons name={recorderState.isRecording ? "stop" : "checkmark"} size={17} color="#FFFFFF" />
+                <Text style={styles.recordingPrimaryText}>{recorderState.isRecording ? "Kaydı bitir" : "Kullan"}</Text>
+              </Pressable>
+              {!recorderState.isRecording ? <Pressable onPress={() => void beginVoiceRecording()} style={styles.recordingSecondary} accessibilityRole="button"><Ionicons name="refresh-outline" size={16} color={colors.primary} /><Text style={styles.recordingSecondaryText}>Yeniden kaydet</Text></Pressable> : null}
+              <Pressable onPress={() => void cancelVoiceRecording()} style={styles.recordingCancel} accessibilityRole="button"><Text style={styles.recordingCancelText}>Vazgeç</Text></Pressable>
+            </View>
+          </View>
+        </Modal>
+        <QuickGratitudeModal visible={quickVisible} onClose={() => setQuickVisible(false)} onSave={saveQuickEntry} />
+        <PlaylistPicker visible={playlistPickerOpen} playlists={playlists} folders={playlistFolders} onClose={() => setPlaylistPickerOpen(false)} onSelect={addToPlaylist} onCreate={createPlaylistForEntry} />
       </KeyboardAvoidingView>
     </ScreenContainer>
   );
 }
 
-const createStyles = (colors: { background: string; surface: string; ink: string; muted: string; border: string; primary: string; primaryDark: string; primarySoft: string; orange: string; orangeSoft: string }) => StyleSheet.create({
+const createStyles = (colors: Record<string, string>) => StyleSheet.create({
   flex: { flex: 1 },
-  listContent: { paddingHorizontal: 22, paddingBottom: 30 },
-  header: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingTop: 18,
-  },
-  brandRow: { alignItems: "center", flexDirection: "row", marginBottom: 15 },
-  brandMark: {
-    alignItems: "center",
-    backgroundColor: colors.primary,
-    borderRadius: 9,
-    height: 25,
-    justifyContent: "center",
-    marginRight: 8,
-    width: 25,
-  },
-  brandText: { color: colors.primary, fontSize: 14, fontWeight: "800", letterSpacing: 1.5 },
-  headerDot: { backgroundColor: colors.orange, borderRadius: 4, height: 8, marginTop: 12, width: 8 },
-  topActions: { alignItems: "center", flexDirection: "row", gap: 8, marginTop: 0 },
-  roundButton: { alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 21, borderWidth: 1, height: 42, justifyContent: "center", width: 42 },
-  roundButtonFilled: { backgroundColor: colors.primary, borderColor: colors.primary },
-  title: { color: colors.ink, fontSize: 30, fontWeight: "800", letterSpacing: -0.8, lineHeight: 35 },
-  todayCard: {
-    alignItems: "center",
-    backgroundColor: colors.primarySoft,
-    borderRadius: 20,
-    flexDirection: "row",
-    marginTop: 24,
-    padding: 15,
-  },
-  todayIcon: { alignItems: "center", backgroundColor: colors.orangeSoft, borderRadius: 15, height: 38, justifyContent: "center", width: 38 },
-  todayCopy: { flex: 1, marginLeft: 12 },
-  todayLabel: { color: colors.primary, fontSize: 10, fontWeight: "800", letterSpacing: 1.1 },
-  todayCount: { color: colors.ink, fontSize: 22, fontWeight: "800", marginTop: 2 },
-  todayUnit: { color: colors.muted, fontSize: 13, fontWeight: "600" },
-  todayLeaf: { alignItems: "center", backgroundColor: colors.primarySoft, borderRadius: 17, height: 34, justifyContent: "center", width: 34 },
-  listenTodayButton: { alignItems: "center", alignSelf: "flex-start", backgroundColor: colors.primarySoft, borderRadius: 12, flexDirection: "row", gap: 7, marginTop: 9, paddingHorizontal: 14, paddingVertical: 11 },
-  listenTodayDisabled: { opacity: 0.45 },
-  listenTodayText: { color: colors.primary, fontSize: 11, fontWeight: "800" },
-  listHeaderActions: { alignItems: "center", flexDirection: "row", gap: 7 },
-  inspirationCard: { alignItems: "center", backgroundColor: colors.orangeSoft, borderRadius: 15, flexDirection: "row", marginBottom: 12, padding: 12 }, inspirationText: { color: colors.ink, flex: 1, fontSize: 12, fontWeight: "600", marginLeft: 8 },
-  composerCard: {
-    minHeight: 230,
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: 22,
-    borderWidth: 1,
-    marginTop: 15,
-    padding: 16,
-  },
-  composerTop: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
-  composerTitle: { color: colors.ink, fontSize: 20, fontWeight: "800" },
-  input: { color: colors.ink, fontFamily: "PlayfairDisplay", fontSize: 16, lineHeight: 24, minHeight: 135, paddingTop: 15 },
-  composerFooter: { alignItems: "center", flexDirection: "row", justifyContent: "flex-end", marginTop: 4 },
-  addButton: { alignItems: "center", backgroundColor: colors.primaryDark, borderRadius: 13, flexDirection: "row", gap: 8, paddingHorizontal: 15, paddingVertical: 10 },
-  addButtonDisabled: { opacity: 0.5 },
-  addButtonText: { color: colors.surface, fontSize: 13, fontWeight: "800" },
-  goalCard: { backgroundColor: colors.primarySoft, borderColor: colors.border, borderRadius: 20, borderWidth: 1, marginTop: 14, padding: 15 }, goalHeader: { alignItems: "center", flexDirection: "row" }, goalIcon: { alignItems: "center", backgroundColor: colors.primarySoft, borderRadius: 15, height: 32, justifyContent: "center", width: 32 }, goalCopy: { flex: 1, marginLeft: 10 }, goalTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" }, goalText: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 3 }, goalTrack: { backgroundColor: colors.border, borderRadius: 4, height: 8, marginTop: 16, overflow: "visible", position: "relative" }, goalFill: { backgroundColor: colors.primary, borderRadius: 4, height: 8 }, goalOverflow: { backgroundColor: colors.primaryDark, borderRadius: 3, height: 7, position: "absolute", right: 0 }, goalMarker: { backgroundColor: colors.ink, height: 18, position: "absolute", top: -5, width: 2 }, goalStatus: { color: colors.primary, fontSize: 11, fontWeight: "800", marginTop: 10, textAlign: "right" },
-  pressed: { opacity: 0.76, transform: [{ scale: 0.98 }] },
-  listHeader: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 12, marginTop: 28 },
-  sectionTitle: { color: colors.ink, fontSize: 18, fontWeight: "800" },
-  sectionSubtitle: { color: colors.muted, fontSize: 12, marginTop: 3 },
-  totalPill: { alignItems: "center", backgroundColor: colors.orange, borderRadius: 13, height: 28, justifyContent: "center", minWidth: 28, paddingHorizontal: 8 },
-  totalPillText: { color: colors.surface, fontSize: 12, fontWeight: "800" },
-  entryCard: { alignItems: "flex-start", backgroundColor: colors.surface, borderBottomColor: colors.border, borderBottomWidth: 1, flexDirection: "row", marginBottom: 0, paddingVertical: 20 },
-  entryNumber: { alignItems: "center", justifyContent: "flex-start", marginRight: 14, paddingTop: 3, width: 28 },
-  entryNumberHighlight: { backgroundColor: colors.primarySoft },
-  entryNumberText: { color: colors.muted, fontSize: 11, fontWeight: "800" },
-  entryNumberTextHighlight: { color: colors.primary },
-  entryCopy: { flex: 1, marginRight: 10 },
-  entryText: { color: colors.ink, fontFamily: "OpenSans", fontSize: 15, fontWeight: "400", lineHeight: 27 },
-  entryMeta: { alignItems: "center", flexDirection: "row", gap: 4, marginTop: 9 },
-  entryMetaText: { color: colors.muted, fontFamily: "OpenSans", fontSize: 11 },
-  numberPlay: { alignItems: "center", justifyContent: "center", marginLeft: 3, marginTop: 3, width: 28 },
-  emptyState: { alignItems: "center", backgroundColor: colors.background, borderRadius: 20, paddingHorizontal: 24, paddingVertical: 27 },
-  emptyIcon: { alignItems: "center", backgroundColor: colors.primarySoft, borderRadius: 19, height: 48, justifyContent: "center", marginBottom: 11, width: 48 },
-  emptyTitle: { color: colors.ink, fontSize: 15, fontWeight: "800" },
-  emptyText: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 6, textAlign: "center" },
+  listContent: { paddingHorizontal: 22, paddingBottom: 36 },
+  header: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingTop: 16 },
+  brandRow: { alignItems: "center", flexDirection: "row", gap: 9 },
+  brandMark: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 13, height: 34, justifyContent: "center", width: 34 },
+  brandText: { color: colors.primary, fontSize: 12, fontWeight: "800", letterSpacing: 1.4 },
+  headerActions: { alignItems: "center", flexDirection: "row", gap: 8 },
+  quickButton: { alignItems: "center", backgroundColor: colors.primary, borderRadius: 22, height: 44, justifyContent: "center", width: 44 },
+  settingsButton: { alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 22, borderWidth: 1, height: 44, justifyContent: "center", width: 44 },
+  goalCard: { backgroundColor: "transparent", borderColor: "transparent", borderRadius: 14, borderWidth: 0, marginBottom: 17, marginTop: 29, paddingHorizontal: 3, paddingVertical: 8 },
+  goalHeader: { alignItems: "center", flexDirection: "row" },
+  goalIcon: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 15, height: 34, justifyContent: "center", width: 34 },
+  goalCopy: { flex: 1, marginLeft: 11 },
+  goalTitle: { color: colors.ink, fontSize: 13, fontWeight: "700" },
+  goalText: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 3 },
+  goalEdit: { alignItems: "center", borderRadius: 20, height: 40, justifyContent: "center", width: 40 },
+  goalTrack: { backgroundColor: colors.border, borderRadius: 4, height: 6, marginTop: 10, overflow: "visible", position: "relative" },
+  goalFill: { backgroundColor: colors.primary, borderRadius: 5, height: 8 },
+  goalOverflow: { backgroundColor: colors.warning, borderRadius: 5, height: 8, position: "absolute", right: 0, top: 0 },
+  goalMarker: { backgroundColor: colors.ink, height: 18, position: "absolute", top: -5, width: 2 },
+  goalStatus: { color: colors.primary, fontSize: 12, fontWeight: "800", marginTop: 9, textAlign: "right" },
+  composerCard: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 22, borderWidth: 1, marginTop: 14, padding: 17 },
+  input: { color: colors.ink, fontFamily: "PlayfairDisplay", fontSize: 17, lineHeight: 27, minHeight: 118, padding: 0, paddingTop: 2 },
+  attachmentActions: { alignItems: "center", flex: 1, flexDirection: "row", gap: 7, justifyContent: "flex-start" },
+  attachmentIconButton: { alignItems: "center", backgroundColor: colors.soft, borderColor: colors.border, borderRadius: 12, borderWidth: 1, height: 44, justifyContent: "center", width: 44 },
+  attachmentChip: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 10, flexDirection: "row", gap: 7, marginTop: 9, minHeight: 42, paddingLeft: 11, paddingRight: 4 },
+  attachmentName: { color: colors.ink, flex: 1, fontSize: 12, fontWeight: "700" },
+  attachmentRemove: { alignItems: "center", height: 40, justifyContent: "center", width: 40 },
+  imageDraftWrap: { alignSelf: "flex-start", marginTop: 10, position: "relative" },
+  imageDraft: { borderRadius: 12, height: 92, width: 122 },
+  imageRemove: { alignItems: "center", backgroundColor: "rgba(0,0,0,0.65)", borderRadius: 15, height: 30, justifyContent: "center", position: "absolute", right: 5, top: 5, width: 30 },
+  composerFooter: { alignItems: "center", borderTopColor: colors.border, borderTopWidth: 1, flexDirection: "row", gap: 8, justifyContent: "space-between", marginTop: 11, paddingTop: 12 },
+  addButton: { alignItems: "center", backgroundColor: colors.primary, borderRadius: 13, flexDirection: "row", gap: 7, justifyContent: "center", minHeight: 44, paddingHorizontal: 14 },
+  addButtonDisabled: { opacity: 0.48 },
+  addButtonText: { color: colors.onPrimary, fontSize: 13, fontWeight: "800" },
+  listHeader: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 5, marginTop: 31 },
+  listHeaderActions: { alignItems: "center", flexDirection: "row", gap: 8 },
+  sectionTitle: { color: colors.ink, fontFamily: "PlayfairDisplaySemiBold", fontSize: 20 },
+  listenButton: { alignItems: "center", borderColor: colors.border, borderRadius: 12, borderWidth: 1, flexDirection: "row", gap: 6, minHeight: 40, paddingHorizontal: 11 },
+  listenText: { color: colors.primary, fontSize: 12, fontWeight: "700" },
+  totalPill: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 13, height: 30, justifyContent: "center", minWidth: 30, paddingHorizontal: 8 },
+  totalPillText: { color: colors.primary, fontSize: 12, fontWeight: "800" },
+  emptyState: { alignItems: "center", paddingHorizontal: 24, paddingTop: 30 },
+  emptyIcon: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 23, height: 50, justifyContent: "center", marginBottom: 12, width: 50 },
+  emptyTitle: { color: colors.ink, fontSize: 15, fontWeight: "700" },
+  emptyText: { color: colors.muted, fontSize: 13, lineHeight: 20, marginTop: 5, textAlign: "center" },
+  quoteCard: { alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 20, borderWidth: 1, flexDirection: "row", gap: 12, marginTop: 17, padding: 15 },
+  quoteText: { color: colors.ink, flex: 1, fontFamily: "PlayfairDisplay", fontSize: 15, lineHeight: 24 },
+  quoteButton: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 21, height: 42, justifyContent: "center", width: 42 },
+  entryCard: { alignItems: "flex-start", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 18, borderWidth: 1, flexDirection: "row", marginBottom: 10, paddingHorizontal: 13, paddingVertical: 14 },
+  entryCardPlaying: { backgroundColor: colors.soft, borderColor: colors.primary, borderWidth: 1.5 },
+  entryIndexColumn: { alignItems: "center", marginRight: 11, width: 44 },
+  entryCopy: { flex: 1, paddingTop: 2 },
+  entryText: { color: colors.ink, fontFamily: "OpenSans", fontSize: 15, lineHeight: 24 },
+  entryImage: { aspectRatio: 1.65, borderRadius: 12, marginTop: 10, width: "100%" },
+  entryAttachment: { alignItems: "center", flexDirection: "row", gap: 5, marginTop: 8 },
+  entryAttachmentText: { color: colors.muted, flex: 1, fontSize: 11 },
+  nowPlayingRow: { alignItems: "center", flexDirection: "row", gap: 5, marginTop: 7 },
+  entryMeta: { color: colors.muted, fontSize: 11, fontWeight: "600", marginTop: 9 },
+  nowPlayingLabel: { color: colors.primary, fontSize: 11, fontWeight: "800" },
+  entryAction: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 22, height: 44, justifyContent: "center", marginTop: 4, width: 44 },
+  imagePreviewBackdrop: { alignItems: "center", backgroundColor: "rgba(0,0,0,0.9)", flex: 1, justifyContent: "center", padding: 20 },
+  entryMenuBackdrop: { alignItems: "center", backgroundColor: "rgba(0,0,0,0.48)", flex: 1, justifyContent: "center", padding: 22 },
+  entryMenuCard: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 20, borderWidth: 1, maxWidth: 420, padding: 17, width: "100%" },
+  entryMenuEyebrow: { color: colors.primary, fontSize: 10, fontWeight: "800", letterSpacing: 1.1 },
+  entryMenuPreview: { color: colors.ink, fontFamily: "PlayfairDisplaySemiBold", fontSize: 16, lineHeight: 22, marginTop: 5 },
+  entryMenuRow: { flexDirection: "row", gap: 7, marginTop: 14 },
+  entryMenuOption: { alignItems: "center", backgroundColor: colors.background, borderColor: colors.border, borderRadius: 13, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 78, paddingHorizontal: 4, paddingVertical: 8 },
+  entryMenuText: { color: colors.ink, fontSize: 10, fontWeight: "800", marginTop: 7, textAlign: "center" },
+  entryMenuDanger: { borderColor: colors.error },
+  entryMenuDangerText: { color: colors.error },
+  entryEditBackdrop: { alignItems: "center", backgroundColor: "rgba(0,0,0,0.48)", flex: 1, justifyContent: "center", padding: 22 },
+  entryEditCard: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 22, borderWidth: 1, maxWidth: 440, padding: 20, width: "100%" },
+  entryEditTitle: { color: colors.ink, fontFamily: "PlayfairDisplaySemiBold", fontSize: 19, marginTop: 5 },
+  entryEditInput: { backgroundColor: colors.background, borderColor: colors.border, borderRadius: 14, borderWidth: 1, color: colors.ink, fontFamily: "OpenSans", fontSize: 15, lineHeight: 22, marginTop: 15, maxHeight: 260, minHeight: 130, padding: 12 },
+  entryEditActions: { flexDirection: "row", gap: 9, justifyContent: "flex-end", marginTop: 15 },
+  entryEditCancel: { alignItems: "center", borderColor: colors.border, borderRadius: 11, borderWidth: 1, justifyContent: "center", minHeight: 44, paddingHorizontal: 16 },
+  entryEditCancelText: { color: colors.muted, fontSize: 12, fontWeight: "700" },
+  entryEditSave: { alignItems: "center", backgroundColor: colors.primary, borderRadius: 11, justifyContent: "center", minHeight: 44, paddingHorizontal: 20 },
+  entryEditSaveText: { color: colors.onPrimary, fontSize: 12, fontWeight: "800" },
+  imagePreview: { height: "80%", width: "100%" },
+  imagePreviewClose: { alignItems: "center", backgroundColor: "rgba(255,255,255,0.18)", borderRadius: 22, height: 44, justifyContent: "center", marginTop: 16, width: 44 },
+  galleryBackdrop: { backgroundColor: "rgba(0,0,0,0.55)", flex: 1, justifyContent: "flex-end" },
+  gallerySheet: { backgroundColor: colors.surface, borderColor: colors.border, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, height: "84%", paddingHorizontal: 14, paddingTop: 16 },
+  galleryHeader: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
+  galleryHeading: { flex: 1, minWidth: 0 },
+  galleryTitle: { color: colors.ink, fontFamily: "PlayfairDisplaySemiBold", fontSize: 20 },
+  galleryHint: { color: colors.muted, fontSize: 12, marginTop: 3 },
+  galleryClose: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 20, height: 40, justifyContent: "center", width: 40 },
+  galleryGrid: { paddingBottom: 20 },
+  galleryRow: { gap: 5, marginBottom: 5 },
+  galleryTile: { aspectRatio: 1, borderRadius: 10, flex: 1, overflow: "hidden" },
+  galleryThumb: { height: "100%", width: "100%" },
+  galleryMessage: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 14, gap: 8, marginBottom: 12, padding: 13 },
+  galleryMessageText: { color: colors.muted, fontSize: 12, lineHeight: 18, textAlign: "center" },
+  galleryRetry: { alignItems: "center", backgroundColor: colors.primary, borderRadius: 10, minHeight: 38, justifyContent: "center", marginTop: 2, paddingHorizontal: 14 },
+  galleryRetryText: { color: colors.onPrimary, fontSize: 12, fontWeight: "800" },
+  galleryEmpty: { color: colors.muted, fontSize: 12, paddingVertical: 15, textAlign: "center" },
+  recordingBackdrop: { alignItems: "center", backgroundColor: "rgba(0,0,0,0.58)", flex: 1, justifyContent: "center", padding: 22 },
+  recordingCard: { alignItems: "center", backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 24, borderWidth: 1, maxWidth: 440, padding: 24, width: "100%" },
+  recordingIcon: { alignItems: "center", backgroundColor: colors.soft, borderRadius: 26, height: 52, justifyContent: "center", width: 52 },
+  recordingTitle: { color: colors.ink, fontFamily: "PlayfairDisplaySemiBold", fontSize: 20, marginTop: 14 },
+  recordingHint: { color: colors.muted, fontSize: 13, lineHeight: 20, marginTop: 7, textAlign: "center" },
+  recordingTimer: { color: colors.ink, fontSize: 30, fontVariant: ["tabular-nums"], fontWeight: "700", marginVertical: 18 },
+  recordingPrimary: { alignItems: "center", backgroundColor: colors.primary, borderRadius: 14, flexDirection: "row", gap: 8, justifyContent: "center", minHeight: 48, width: "100%" },
+  recordingStop: { backgroundColor: colors.error },
+  recordingPrimaryText: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
+  recordingSecondary: { alignItems: "center", flexDirection: "row", gap: 7, justifyContent: "center", marginTop: 12, minHeight: 42, paddingHorizontal: 12 },
+  recordingSecondaryText: { color: colors.primary, fontSize: 13, fontWeight: "700" },
+  recordingCancel: { alignItems: "center", justifyContent: "center", marginTop: 4, minHeight: 40, width: "100%" },
+  recordingCancelText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
+  disabled: { opacity: 0.5 },
+  pressed: { opacity: 0.72 },
 });

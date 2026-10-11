@@ -38,12 +38,13 @@ const env = {
   androidPackage: bundleId,
 };
 
-const config: ExpoConfig = {
-  name: env.appName,
-  slug: env.appSlug,
-  version: "1.0.0",
-  orientation: "portrait",
-  icon: "./assets/images/icon.png",
+  const config: ExpoConfig = {
+    name: env.appName,
+    slug: env.appSlug,
+    owner: "ertekinhss-team",
+    version: "1.0.0",
+    orientation: "portrait",
+    icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
   newArchEnabled: true,
@@ -51,7 +52,8 @@ const config: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
     "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["audio"]
       }
   },
   android: {
@@ -64,7 +66,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    permissions: ["POST_NOTIFICATIONS", "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_MEDIA_PLAYBACK"],
     intentFilters: [
       {
         action: "VIEW",
@@ -94,9 +96,22 @@ const config: ExpoConfig = {
       },
     ],
     [
+      "expo-image-picker",
+      {
+        photosPermission: "Şükran notlarına anı fotoğrafı eklemek için fotoğraflarına erişim izni gerekir.",
+      },
+    ],
+    [
+      "expo-media-library",
+      {
+        photosPermission: "Şükran notlarına kırpılmadan anı fotoğrafı eklemek için fotoğraf kitaplığına erişim izni gerekir.",
+        granularPermissions: ["photo"],
+      },
+    ],
+    [
       "expo-audio",
       {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
+        microphonePermission: "Şükran notuna kendi sesini kaydedebilmek için mikrofon erişimine izin ver.",
       },
     ],
     [
@@ -127,7 +142,7 @@ const config: ExpoConfig = {
   },
   extra: {
     eas: {
-      projectId: "c77df511-be05-412f-8933-2ed9794fa30e",
+      projectId: "3aee5d3b-2a39-4bcf-b23a-78a569c194d1",
     },
   },
 };

@@ -4,10 +4,10 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useFonts, PlayfairDisplay_400Regular, PlayfairDisplay_500Medium, PlayfairDisplay_500Medium_Italic, PlayfairDisplay_600SemiBold, PlayfairDisplay_700Bold } from "@expo-google-fonts/playfair-display";
 import { OpenSans_400Regular } from "@expo-google-fonts/open-sans";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
-import { Platform, Pressable, Text, TextInput, View } from "react-native";
+import { AppState, Platform, Pressable, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as LocalAuthentication from "expo-local-authentication";
 import "@/lib/_core/nativewind-pressable";
@@ -25,7 +25,8 @@ import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-run
 import { configureNotifications } from "@/lib/reminders";
 import { PlayerProvider } from "@/lib/player-context";
 import { PersistentGratitudePlayer } from "@/components/persistent-gratitude-player";
-import { loadPreferences } from "@/lib/app-preferences";
+import { loadPreferences, subscribeToPreferences } from "@/lib/app-preferences";
+import { privacyLockExemption } from "@/lib/privacy-lock-exemption";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -35,18 +36,62 @@ export const unstable_settings = {
 };
 
 function PrivacyGuard({ children }: { children: React.ReactNode }) {
-  const [locked, setLocked] = useState(false);
-  const [checking, setChecking] = useState(false);
+  const [locked, setLocked] = useState(Platform.OS !== "web");
+  const [checking, setChecking] = useState(Platform.OS !== "web");
+  const privacyLockEnabledRef = useRef(false);
   const { palette } = useThemeContext();
   const authenticate = useCallback(async () => {
-    setChecking(true);
-    const preferences = await loadPreferences();
-    if (Platform.OS === "web" || !preferences.privacyLock) { setLocked(false); setChecking(false); return; }
-    const result = await LocalAuthentication.authenticateAsync({ promptMessage: "Şükür Günlüğü kilidini aç", cancelLabel: "İptal", disableDeviceFallback: false });
-    setLocked(!result.success); setChecking(false);
+    if (privacyLockEnabledRef.current) {
+      setChecking(true);
+      setLocked(true);
+    }
+    try {
+      const preferences = await loadPreferences();
+      privacyLockEnabledRef.current = preferences.privacyLock;
+      if (Platform.OS === "web" || !preferences.privacyLock) { setLocked(false); return; }
+      setChecking(true);
+      setLocked(true);
+      const result = await LocalAuthentication.authenticateAsync({ promptMessage: "Şükür Günlüğü kilidini aç", cancelLabel: "İptal", disableDeviceFallback: false });
+      setLocked(!result.success);
+    } catch {
+      setLocked(true);
+    } finally {
+      setChecking(false);
+    }
   }, []);
-  useEffect(() => { authenticate(); }, [authenticate]);
-  return <View style={{ flex: 1 }}>{children}{locked ? <View style={{ alignItems: "center", backgroundColor: palette.background, bottom: 0, justifyContent: "center", left: 0, position: "absolute", right: 0, top: 0 }}><Ionicons name="lock-closed" size={40} color={palette.primary} /><Text style={{ color: palette.foreground, fontSize: 20, fontWeight: "800", marginTop: 14 }}>Günlük kilitli</Text><Text style={{ color: palette.muted, fontSize: 12, marginTop: 5 }}>Devam etmek için cihaz kilidini doğrula.</Text><Pressable disabled={checking} onPress={authenticate} style={{ backgroundColor: palette.primary, borderRadius: 13, marginTop: 20, paddingHorizontal: 18, paddingVertical: 12 }}><Text style={{ color: palette.surface, fontWeight: "800" }}>{checking ? "Kontrol ediliyor" : "Yeniden dene"}</Text></Pressable></View> : null}</View>;
+  useEffect(() => {
+    void authenticate();
+    const preferenceSubscription = subscribeToPreferences((preferences) => {
+      privacyLockEnabledRef.current = preferences.privacyLock;
+    });
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (privacyLockExemption.shouldSkipAppState(state)) return;
+      if (state === "background" || state === "inactive") {
+        if (privacyLockEnabledRef.current) setLocked(true);
+      } else if (state === "active") {
+        void authenticate();
+      }
+    });
+    return () => { subscription.remove(); preferenceSubscription(); };
+  }, [authenticate]);
+  const blocked = locked || checking;
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ flex: 1 }} accessibilityElementsHidden={blocked} importantForAccessibility={blocked ? "no-hide-descendants" : "auto"}>
+        {children}
+      </View>
+      {blocked ? (
+        <View accessibilityViewIsModal style={{ alignItems: "center", backgroundColor: palette.background, bottom: 0, justifyContent: "center", left: 0, position: "absolute", right: 0, top: 0, zIndex: 1000 }}>
+          <Ionicons name="lock-closed" size={40} color={palette.primary} />
+          <Text style={{ color: palette.foreground, fontSize: 20, fontWeight: "800", marginTop: 14 }}>{checking ? "Günlük açılıyor" : "Günlük kilitli"}</Text>
+          <Text style={{ color: palette.muted, fontSize: 12, marginTop: 5 }}>Devam etmek için cihaz kilidini doğrula.</Text>
+          <Pressable disabled={checking} onPress={() => void authenticate()} accessibilityRole="button" accessibilityLabel="Günlük kilidini yeniden dene" style={{ alignItems: "center", backgroundColor: palette.primary, borderRadius: 13, marginTop: 20, minHeight: 44, justifyContent: "center", paddingHorizontal: 18 }}>
+            <Text style={{ color: palette.surface, fontWeight: "800" }}>{checking ? "Kontrol ediliyor" : "Yeniden dene"}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 export default function RootLayout() {
@@ -106,8 +151,8 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
   const TextWithDefaults = Text as typeof Text & { defaultProps?: { style?: unknown } };
   const InputWithDefaults = TextInput as typeof TextInput & { defaultProps?: { style?: unknown } };
-  TextWithDefaults.defaultProps = { ...TextWithDefaults.defaultProps, style: [{ fontFamily: "PlayfairDisplay" }, TextWithDefaults.defaultProps?.style] };
-  InputWithDefaults.defaultProps = { ...InputWithDefaults.defaultProps, style: [{ fontFamily: "PlayfairDisplay" }, InputWithDefaults.defaultProps?.style] };
+  TextWithDefaults.defaultProps = { ...TextWithDefaults.defaultProps, style: [{ fontFamily: "OpenSans" }, TextWithDefaults.defaultProps?.style] };
+  InputWithDefaults.defaultProps = { ...InputWithDefaults.defaultProps, style: [{ fontFamily: "OpenSans" }, InputWithDefaults.defaultProps?.style] };
 
   const content = (
     <GestureHandlerRootView style={{ flex: 1 }}>
